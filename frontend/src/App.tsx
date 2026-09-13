@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-type Document = {
+export type Document = {
   id: number;
   title: string;
   content: string;
