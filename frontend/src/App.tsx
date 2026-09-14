@@ -37,9 +37,26 @@ function App() {
         doc.id === activeId ? { ...doc, content } : doc
       )
     );
+
     setSaved(false);
 
-    setTimeout(() => setSaved(true), 700);
+    setTimeout(() => {
+      setSaved(true);
+    }, 700);
+  };
+
+  const updateTitle = (title: string) => {
+    setDocuments((docs) =>
+      docs.map((doc) =>
+        doc.id === activeId ? { ...doc, title } : doc
+      )
+    );
+
+    setSaved(false);
+
+    setTimeout(() => {
+      setSaved(true);
+    }, 700);
   };
 
   const createDocument = () => {
@@ -49,7 +66,7 @@ function App() {
       content: "Start writing your document here...",
     };
 
-    setDocuments([...documents, newDocument]);
+    setDocuments((docs) => [...docs, newDocument]);
     setActiveId(newDocument.id);
   };
 
@@ -62,35 +79,53 @@ function App() {
           padding: 0;
         }
 
-        body {
-          font-family: Inter, Arial, sans-serif;
-          background: #f5f7fb;
+        :root {
+          font-family: Inter, ui-sans-serif, system-ui, -apple-system,
+            BlinkMacSystemFont, "Segoe UI", sans-serif;
           color: #172033;
+          background: #f6f7fb;
+          font-synthesis: none;
+          text-rendering: optimizeLegibility;
+        }
+
+        body {
+          min-width: 320px;
+          min-height: 100vh;
+          background: #f6f7fb;
+        }
+
+        button,
+        input,
+        textarea {
+          font: inherit;
         }
 
         button {
-          font-family: inherit;
+          border: 0;
         }
 
         .app {
-          min-height: 100vh;
+          height: 100vh;
           display: flex;
           flex-direction: column;
+          overflow: hidden;
         }
 
-        /* HEADER */
+        /* =========================
+           HEADER
+        ========================= */
 
         .header {
-          height: 72px;
-          background: white;
-          border-bottom: 1px solid #e6e9ef;
+          height: 68px;
+          flex-shrink: 0;
           display: flex;
           align-items: center;
           justify-content: space-between;
-          padding: 0 28px;
-          position: sticky;
-          top: 0;
-          z-index: 10;
+          padding: 0 26px;
+          background: rgba(255, 255, 255, 0.96);
+          border-bottom: 1px solid #e7e9ef;
+          position: relative;
+          z-index: 20;
         }
 
         .brand {
@@ -102,178 +137,222 @@ function App() {
         .logo {
           width: 40px;
           height: 40px;
-          border-radius: 11px;
-          background: linear-gradient(135deg, #4f46e5, #7c3aed);
-          color: white;
           display: flex;
           align-items: center;
           justify-content: center;
-          font-size: 19px;
+          border-radius: 12px;
+          background: linear-gradient(135deg, #4f46e5, #7c3aed);
+          color: white;
+          font-size: 18px;
           font-weight: 800;
-          box-shadow: 0 6px 18px rgba(79, 70, 229, 0.25);
+          box-shadow: 0 7px 18px rgba(79, 70, 229, 0.24);
         }
 
-        .brand h1 {
-          font-size: 20px;
+        .brand-info h1 {
+          font-size: 18px;
+          line-height: 20px;
           font-weight: 750;
           color: #111827;
+          letter-spacing: -0.02em;
         }
 
-        .brand p {
-          font-size: 12px;
-          color: #8a93a3;
+        .brand-info p {
           margin-top: 2px;
+          font-size: 11px;
+          color: #9299a8;
         }
 
         .header-right {
           display: flex;
           align-items: center;
-          gap: 20px;
+          gap: 18px;
         }
 
         .connection {
           display: flex;
           align-items: center;
-          gap: 7px;
-          color: #16a34a;
-          font-size: 13px;
-          font-weight: 600;
+          gap: 8px;
+          padding: 7px 11px;
+          border-radius: 20px;
+          background: #f0fdf4;
+          color: #15803d;
+          font-size: 12px;
+          font-weight: 650;
         }
 
         .connection-dot {
-          width: 8px;
-          height: 8px;
+          width: 7px;
+          height: 7px;
           border-radius: 50%;
           background: #22c55e;
-          box-shadow: 0 0 0 4px #dcfce7;
+          box-shadow: 0 0 0 3px #dcfce7;
         }
 
         .avatar {
-          width: 36px;
-          height: 36px;
+          width: 35px;
+          height: 35px;
           border-radius: 50%;
-          background: #ede9fe;
-          color: #5b21b6;
           display: flex;
           align-items: center;
           justify-content: center;
-          font-size: 13px;
-          font-weight: 700;
+          background: #ede9fe;
+          color: #5b21b6;
+          font-size: 12px;
+          font-weight: 750;
+          border: 2px solid white;
+          box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
         }
 
-        /* MAIN */
+        /* =========================
+           WORKSPACE
+        ========================= */
 
         .workspace {
           flex: 1;
+          min-height: 0;
           display: flex;
-          min-height: calc(100vh - 72px);
         }
 
-        /* SIDEBAR */
+        /* =========================
+           SIDEBAR
+        ========================= */
 
         .sidebar {
-          width: 270px;
-          background: white;
-          border-right: 1px solid #e6e9ef;
-          padding: 24px 16px;
+          width: 265px;
           flex-shrink: 0;
+          display: flex;
+          flex-direction: column;
+          padding: 22px 14px;
+          background: #ffffff;
+          border-right: 1px solid #e7e9ef;
         }
 
         .sidebar-top {
           display: flex;
           align-items: center;
           justify-content: space-between;
-          margin-bottom: 20px;
-          padding: 0 5px;
+          padding: 0 7px;
+          margin-bottom: 18px;
         }
 
         .sidebar-title {
-          font-size: 14px;
+          font-size: 12px;
           font-weight: 750;
-          color: #4b5563;
+          color: #667085;
           text-transform: uppercase;
-          letter-spacing: 0.06em;
+          letter-spacing: 0.08em;
         }
 
         .new-button {
-          border: none;
+          display: flex;
+          align-items: center;
+          gap: 5px;
+          padding: 8px 12px;
+          border-radius: 8px;
           background: #4f46e5;
           color: white;
-          height: 34px;
-          padding: 0 12px;
-          border-radius: 8px;
           font-size: 12px;
           font-weight: 700;
           cursor: pointer;
-          transition: 0.2s;
+          transition: all 0.18s ease;
+          box-shadow: 0 4px 10px rgba(79, 70, 229, 0.18);
         }
 
         .new-button:hover {
           background: #4338ca;
           transform: translateY(-1px);
+          box-shadow: 0 6px 14px rgba(79, 70, 229, 0.24);
         }
 
         .documents {
           display: flex;
           flex-direction: column;
           gap: 5px;
+          overflow-y: auto;
         }
 
         .document {
+          width: 100%;
           display: flex;
           align-items: center;
-          gap: 11px;
-          padding: 12px;
+          gap: 10px;
+          padding: 11px 12px;
           border-radius: 9px;
+          background: transparent;
+          color: #667085;
+          text-align: left;
           cursor: pointer;
-          color: #596273;
-          transition: 0.2s;
+          transition: all 0.18s ease;
         }
 
         .document:hover {
-          background: #f5f3ff;
+          background: #f7f7ff;
           color: #4f46e5;
         }
 
         .document.active {
           background: #eef2ff;
           color: #4338ca;
-          font-weight: 650;
         }
 
         .document-icon {
-          font-size: 15px;
+          width: 27px;
+          height: 27px;
+          flex-shrink: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          border-radius: 7px;
+          background: #f3f4f6;
+          font-size: 12px;
+        }
+
+        .document.active .document-icon {
+          background: #e0e7ff;
         }
 
         .document-name {
-          font-size: 13px;
+          min-width: 0;
           overflow: hidden;
-          text-overflow: ellipsis;
           white-space: nowrap;
+          text-overflow: ellipsis;
+          font-size: 13px;
+          font-weight: 550;
         }
 
-        /* EDITOR AREA */
+        .document.active .document-name {
+          font-weight: 700;
+        }
+
+        /* =========================
+           EDITOR
+        ========================= */
 
         .editor-area {
+          min-width: 0;
           flex: 1;
           display: flex;
           flex-direction: column;
-          min-width: 0;
+          background: #f6f7fb;
         }
 
-        .editor-toolbar {
-          height: 58px;
-          background: white;
-          border-bottom: 1px solid #e6e9ef;
+        .editor-topbar {
+          height: 52px;
+          flex-shrink: 0;
           display: flex;
           align-items: center;
           justify-content: space-between;
           padding: 0 28px;
+          background: white;
+          border-bottom: 1px solid #e7e9ef;
         }
 
         .editing-label {
-          color: #8a93a3;
-          font-size: 13px;
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 12px;
+          color: #98a0ae;
         }
 
         .editing-label strong {
@@ -281,119 +360,186 @@ function App() {
           font-weight: 650;
         }
 
-        .saved {
+        .save-status {
           display: flex;
           align-items: center;
           gap: 7px;
-          color: #16a34a;
           font-size: 12px;
           font-weight: 600;
         }
 
-        .saved-dot {
+        .save-status.saved {
+          color: #16a34a;
+        }
+
+        .save-status.saving {
+          color: #d97706;
+        }
+
+        .status-dot {
           width: 7px;
           height: 7px;
           border-radius: 50%;
+        }
+
+        .saved-dot {
           background: #22c55e;
         }
 
-        /* TOOLBAR */
+        .saving-dot {
+          background: #f59e0b;
+        }
+
+        /* =========================
+           FORMATTING BAR
+        ========================= */
 
         .format-toolbar {
-          background: white;
-          border-bottom: 1px solid #e6e9ef;
-          padding: 9px 28px;
+          height: 50px;
+          flex-shrink: 0;
           display: flex;
-          gap: 5px;
+          align-items: center;
+          padding: 0 28px;
+          gap: 3px;
+          background: white;
+          border-bottom: 1px solid #e7e9ef;
         }
 
         .tool {
-          border: 1px solid transparent;
-          background: transparent;
-          width: 34px;
-          height: 32px;
+          width: 32px;
+          height: 31px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
           border-radius: 6px;
-          color: #596273;
+          background: transparent;
+          color: #667085;
+          font-size: 12px;
           cursor: pointer;
-          font-size: 13px;
-          font-weight: 600;
+          transition: all 0.15s ease;
         }
 
         .tool:hover {
-          background: #f3f4f6;
-          border-color: #e5e7eb;
+          background: #f2f4f7;
+          color: #111827;
+        }
+
+        .tool strong {
+          font-size: 13px;
+        }
+
+        .tool em {
+          font-size: 14px;
+        }
+
+        .tool u {
+          font-size: 13px;
         }
 
         .divider {
           width: 1px;
+          height: 20px;
+          margin: 0 8px;
           background: #e5e7eb;
-          margin: 0 7px;
         }
 
-        /* DOCUMENT */
+        /* =========================
+           DOCUMENT AREA
+        ========================= */
 
         .document-container {
           flex: 1;
-          padding: 42px 30px;
+          min-height: 0;
           overflow-y: auto;
+          padding: 38px 30px;
         }
 
         .paper {
+          width: 100%;
           max-width: 900px;
           min-height: 650px;
           margin: 0 auto;
+          padding: 58px 72px 65px;
           background: white;
-          border: 1px solid #e5e7eb;
-          border-radius: 12px;
-          box-shadow: 0 8px 30px rgba(15, 23, 42, 0.06);
-          padding: 55px 70px;
+          border: 1px solid #e4e7ec;
+          border-radius: 13px;
+          box-shadow:
+            0 10px 30px rgba(15, 23, 42, 0.05),
+            0 2px 6px rgba(15, 23, 42, 0.025);
         }
 
         .paper-title {
-          font-size: 30px;
-          font-weight: 750;
-          color: #111827;
-          margin-bottom: 14px;
+          width: 100%;
+          margin-bottom: 8px;
+          padding: 0;
           border: none;
           outline: none;
-          width: 100%;
+          background: transparent;
+          color: #111827;
+          font-size: 31px;
+          line-height: 1.25;
+          font-weight: 750;
+          letter-spacing: -0.035em;
+        }
+
+        .paper-title::placeholder {
+          color: #c4c8d0;
         }
 
         .paper-subtitle {
-          color: #9ca3af;
-          font-size: 13px;
-          margin-bottom: 32px;
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          margin-bottom: 34px;
+          color: #a0a7b4;
+          font-size: 11px;
+        }
+
+        .subtitle-dot {
+          width: 3px;
+          height: 3px;
+          border-radius: 50%;
+          background: #c7ccd5;
         }
 
         .editor {
+          display: block;
           width: 100%;
           min-height: 430px;
-          resize: vertical;
+          padding: 0;
           border: none;
           outline: none;
-          font-family: Inter, Arial, sans-serif;
-          font-size: 16px;
-          line-height: 1.8;
-          color: #374151;
+          resize: vertical;
           background: transparent;
+          color: #3f4755;
+          font-family: inherit;
+          font-size: 15px;
+          line-height: 1.9;
         }
 
         .editor::placeholder {
-          color: #b5bbc6;
+          color: #b7bdc8;
         }
 
-        /* FOOTER */
+        .editor:focus {
+          outline: none;
+        }
+
+        /* =========================
+           FOOTER
+        ========================= */
 
         .editor-footer {
-          height: 45px;
-          background: white;
-          border-top: 1px solid #e6e9ef;
+          height: 42px;
+          flex-shrink: 0;
           display: flex;
           align-items: center;
           justify-content: space-between;
           padding: 0 28px;
-          color: #9ca3af;
-          font-size: 11px;
+          background: white;
+          border-top: 1px solid #e7e9ef;
+          color: #a0a7b4;
+          font-size: 10px;
         }
 
         .collaborators {
@@ -403,33 +549,88 @@ function App() {
         }
 
         .mini-avatar {
-          width: 23px;
-          height: 23px;
-          border-radius: 50%;
-          background: #e0e7ff;
-          color: #4338ca;
+          width: 22px;
+          height: 22px;
           display: flex;
           align-items: center;
           justify-content: center;
-          font-size: 9px;
-          font-weight: 700;
+          border-radius: 50%;
+          background: #ede9fe;
+          color: #5b21b6;
+          font-size: 8px;
+          font-weight: 750;
         }
 
-        @media (max-width: 700px) {
+        /* =========================
+           SCROLLBAR
+        ========================= */
+
+        ::-webkit-scrollbar {
+          width: 8px;
+          height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+          background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+          background: #d8dce4;
+          border-radius: 10px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+          background: #c2c7d0;
+        }
+
+        /* =========================
+           RESPONSIVE
+        ========================= */
+
+        @media (max-width: 850px) {
           .sidebar {
-            width: 210px;
+            width: 220px;
           }
 
           .paper {
-            padding: 35px 30px;
+            padding: 45px 45px 55px;
+          }
+
+          .document-container {
+            padding: 25px 20px;
+          }
+        }
+
+        @media (max-width: 650px) {
+          .sidebar {
+            width: 190px;
           }
 
           .header {
-            padding: 0 15px;
+            padding: 0 16px;
           }
 
           .connection {
             display: none;
+          }
+
+          .editor-topbar,
+          .format-toolbar,
+          .editor-footer {
+            padding-left: 16px;
+            padding-right: 16px;
+          }
+
+          .paper {
+            padding: 35px 28px 45px;
+          }
+
+          .paper-title {
+            font-size: 26px;
+          }
+
+          .document-container {
+            padding: 18px 12px;
           }
         }
       `}</style>
@@ -441,7 +642,7 @@ function App() {
           <div className="brand">
             <div className="logo">S</div>
 
-            <div>
+            <div className="brand-info">
               <h1>SyncDoc</h1>
               <p>Collaborative Document Editor</p>
             </div>
@@ -449,7 +650,7 @@ function App() {
 
           <div className="header-right">
             <div className="connection">
-              <span className="connection-dot"></span>
+              <span className="connection-dot" />
               Connected
             </div>
 
@@ -462,31 +663,36 @@ function App() {
           {/* SIDEBAR */}
           <aside className="sidebar">
             <div className="sidebar-top">
-              <span className="sidebar-title">Documents</span>
+              <span className="sidebar-title">
+                Documents
+              </span>
 
               <button
                 className="new-button"
                 onClick={createDocument}
               >
-                + New
+                <span>+</span>
+                New
               </button>
             </div>
 
             <div className="documents">
               {documents.map((doc) => (
-                <div
+                <button
                   key={doc.id}
                   className={`document ${
                     activeId === doc.id ? "active" : ""
                   }`}
                   onClick={() => setActiveId(doc.id)}
                 >
-                  <span className="document-icon">📄</span>
+                  <span className="document-icon">
+                    📄
+                  </span>
 
                   <span className="document-name">
                     {doc.title}
                   </span>
-                </div>
+                </button>
               ))}
             </div>
           </aside>
@@ -494,59 +700,95 @@ function App() {
           {/* EDITOR */}
           <main className="editor-area">
 
-            <div className="editor-toolbar">
+            {/* TOP BAR */}
+            <div className="editor-topbar">
               <div className="editing-label">
-                Editing <strong>{activeDocument?.title}</strong>
+                <span>Editing</span>
+
+                <strong>
+                  {activeDocument?.title || "Untitled"}
+                </strong>
               </div>
 
-              <div className="saved">
-                <span className="saved-dot"></span>
+              <div
+                className={`save-status ${
+                  saved ? "saved" : "saving"
+                }`}
+              >
+                <span
+                  className={`status-dot ${
+                    saved
+                      ? "saved-dot"
+                      : "saving-dot"
+                  }`}
+                />
+
                 {saved ? "Saved" : "Saving..."}
               </div>
             </div>
 
-            {/* FORMATTING BAR */}
+            {/* TOOLBAR */}
             <div className="format-toolbar">
-              <button className="tool"><b>B</b></button>
-              <button className="tool"><i>I</i></button>
-              <button className="tool"><u>U</u></button>
+              <button className="tool">
+                <strong>B</strong>
+              </button>
 
-              <span className="divider"></span>
+              <button className="tool">
+                <em>I</em>
+              </button>
 
-              <button className="tool">H1</button>
-              <button className="tool">H2</button>
+              <button className="tool">
+                <u>U</u>
+              </button>
 
-              <span className="divider"></span>
+              <span className="divider" />
 
-              <button className="tool">☷</button>
-              <button className="tool">☰</button>
+              <button className="tool">
+                H1
+              </button>
 
-              <span className="divider"></span>
+              <button className="tool">
+                H2
+              </button>
 
-              <button className="tool">↶</button>
-              <button className="tool">↷</button>
+              <span className="divider" />
+
+              <button className="tool">
+                ☷
+              </button>
+
+              <button className="tool">
+                ☰
+              </button>
+
+              <span className="divider" />
+
+              <button className="tool">
+                ↶
+              </button>
+
+              <button className="tool">
+                ↷
+              </button>
             </div>
 
-            {/* PAPER */}
+            {/* DOCUMENT */}
             <div className="document-container">
               <div className="paper">
 
                 <input
                   className="paper-title"
                   value={activeDocument?.title || ""}
-                  onChange={(e) => {
-                    setDocuments((docs) =>
-                      docs.map((doc) =>
-                        doc.id === activeId
-                          ? { ...doc, title: e.target.value }
-                          : doc
-                      )
-                    );
-                  }}
+                  onChange={(e) =>
+                    updateTitle(e.target.value)
+                  }
+                  placeholder="Untitled document"
                 />
 
                 <div className="paper-subtitle">
-                  Collaborative document • Last edited just now
+                  <span>Collaborative document</span>
+                  <span className="subtitle-dot" />
+                  <span>Last edited just now</span>
                 </div>
 
                 <textarea
@@ -563,9 +805,9 @@ function App() {
 
             {/* FOOTER */}
             <footer className="editor-footer">
-              <div>
+              <span>
                 SyncDoc • Collaborative workspace
-              </div>
+              </span>
 
               <div className="collaborators">
                 <span>Collaborators</span>
