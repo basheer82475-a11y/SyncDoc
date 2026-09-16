@@ -1,0 +1,16 @@
+M	.gitignore
+A	SyncDoc/server/package-lock.json
+A	SyncDoc/server/package.json
+R100	src/config	backend/.env
+A	backend/package-lock.json
+A	backend/package.json
+R100	src/controllers	backend/src/config
+R100	src/models	backend/src/controllers
+R100	src/routes	backend/src/models
+R100	src/services	backend/src/routes
+R064	src/server.ts	backend/src/server.ts
+R100	src/websocket	backend/src/services
+A	backend/src/websocket
+A	backend/tsconfig.json
+M	package-lock.json
+M	package.json
