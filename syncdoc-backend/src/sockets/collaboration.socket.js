@@ -1,3 +1,4 @@
+
 const collaborationSocket = (io) => {
   io.on("connection", (socket) => {
     console.log("User connected:", socket.id);
@@ -11,7 +12,7 @@ const collaborationSocket = (io) => {
       );
 
       socket.to(documentId).emit("user-joined", {
-        userId: socket.id
+        userId: socket.id,
       });
     });
 
