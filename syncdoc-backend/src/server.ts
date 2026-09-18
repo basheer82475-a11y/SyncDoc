@@ -1,6 +1,8 @@
 import express from "express";
 import cors from "cors";
 import * as dotenv from "dotenv";
+import { connectDatabase } from "./config/database";
+import documentRoutes from "./routes/documentRoutes";
 
 dotenv.config();
 
@@ -15,8 +17,16 @@ app.get("/", (req, res) => {
   });
 });
 
+app.use("/api/documents", documentRoutes);
+
 const PORT = process.env.PORT || 5000;
 
-app.listen(PORT, () => {
-  console.log(`SyncDoc server running on port ${PORT}`);
-});
+const startServer = async () => {
+  await connectDatabase();
+
+  app.listen(PORT, () => {
+    console.log(`SyncDoc server running on port ${PORT}`);
+  });
+};
+
+startServer();
