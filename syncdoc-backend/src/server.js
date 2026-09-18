@@ -40,3 +40,7 @@ connectDB();
 server.listen(PORT, () => {
   console.log(`SyncDoc server running on http://localhost:${PORT}`);
 });
+
+
+const authRoutes = require("./routes/authRoutes");
+app.use("/api/auth", authRoutes);
