@@ -7,12 +7,14 @@ const { Server } = require("socket.io");
 
 const connectDB = require("./config/db");
 const collaborationSocket = require("./sockets/collaboration.socket");
+const documentRoutes = require("./routes/documentRoutes");
 
 const app = express();
 
 // Middleware
 app.use(cors());
 app.use(express.json());
+app.use("/api/documents",documentRoutes);
 
 // Create HTTP server
 const server = http.createServer(app);
