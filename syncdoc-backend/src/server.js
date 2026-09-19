@@ -8,13 +8,19 @@ const { Server } = require("socket.io");
 const connectDB = require("./config/db");
 const collaborationSocket = require("./sockets/collaboration.socket");
 const documentRoutes = require("./routes/documentRoutes");
+const authRoutes = require("./routes/authRoutes");
+const sharingRoutes = require("./routes/sharingRoutes");
 
 const app = express();
 
 // Middleware
 app.use(cors());
 app.use(express.json());
-app.use("/api/documents",documentRoutes);
+
+// API Routes
+app.use("/api/documents", documentRoutes);
+app.use("/api/auth", authRoutes);
+app.use("/api/sharing", sharingRoutes);
 
 // Create HTTP server
 const server = http.createServer(app);
@@ -42,7 +48,3 @@ connectDB();
 server.listen(PORT, () => {
   console.log(`SyncDoc server running on http://localhost:${PORT}`);
 });
-
-
-const authRoutes = require("./routes/authRoutes");
-app.use("/api/auth", authRoutes);
