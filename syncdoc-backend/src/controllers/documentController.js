@@ -2,7 +2,7 @@ const Document = require("../models/Document");
 
 const createDocument = async (req, res) => {
   try {
-    const { title, content } = req.body;
+    const { title, content, blocks } = req.body;
 
     if (!title) {
       return res.status(400).json({
@@ -13,6 +13,7 @@ const createDocument = async (req, res) => {
     const document = await Document.create({
       title,
       content: content || "",
+      blocks: blocks || [],
     });
 
     res.status(201).json({

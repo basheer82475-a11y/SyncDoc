@@ -29,12 +29,16 @@ function App() {
   const [activeId, setActiveId] = useState(1);
   const [saved, setSaved] = useState(true);
 
-  const activeDocument = documents.find((doc) => doc.id === activeId);
+  const activeDocument = documents.find(
+    (doc) => doc.id === activeId
+  );
 
   const updateContent = (content: string) => {
     setDocuments((docs) =>
       docs.map((doc) =>
-        doc.id === activeId ? { ...doc, content } : doc
+        doc.id === activeId
+          ? { ...doc, content }
+          : doc
       )
     );
 
@@ -48,7 +52,9 @@ function App() {
   const updateTitle = (title: string) => {
     setDocuments((docs) =>
       docs.map((doc) =>
-        doc.id === activeId ? { ...doc, title } : doc
+        doc.id === activeId
+          ? { ...doc, title }
+          : doc
       )
     );
 
@@ -66,8 +72,28 @@ function App() {
       content: "Start writing your document here...",
     };
 
-    setDocuments((docs) => [...docs, newDocument]);
+    setDocuments((docs) => [
+      ...docs,
+      newDocument,
+    ]);
+
     setActiveId(newDocument.id);
+  };
+
+  const deleteDocument = (id: number) => {
+    if (documents.length === 1) {
+      return;
+    }
+
+    const remainingDocuments = documents.filter(
+      (doc) => doc.id !== id
+    );
+
+    setDocuments(remainingDocuments);
+
+    if (id === activeId) {
+      setActiveId(remainingDocuments[0].id);
+    }
   };
 
   return (
@@ -79,29 +105,20 @@ function App() {
           padding: 0;
         }
 
-        :root {
-          font-family: Inter, ui-sans-serif, system-ui, -apple-system,
-            BlinkMacSystemFont, "Segoe UI", sans-serif;
-          color: #172033;
-          background: #f6f7fb;
-          font-synthesis: none;
-          text-rendering: optimizeLegibility;
-        }
-
         body {
-          min-width: 320px;
-          min-height: 100vh;
+          font-family: Inter, Arial, sans-serif;
           background: #f6f7fb;
+          color: #172033;
         }
 
         button,
         input,
         textarea {
-          font: inherit;
+          font-family: inherit;
         }
 
         button {
-          border: 0;
+          border: none;
         }
 
         .app {
@@ -111,9 +128,7 @@ function App() {
           overflow: hidden;
         }
 
-        /* =========================
-           HEADER
-        ========================= */
+        /* HEADER */
 
         .header {
           height: 68px;
@@ -122,10 +137,8 @@ function App() {
           align-items: center;
           justify-content: space-between;
           padding: 0 26px;
-          background: rgba(255, 255, 255, 0.96);
+          background: white;
           border-bottom: 1px solid #e7e9ef;
-          position: relative;
-          z-index: 20;
         }
 
         .brand {
@@ -141,11 +154,16 @@ function App() {
           align-items: center;
           justify-content: center;
           border-radius: 12px;
-          background: linear-gradient(135deg, #4f46e5, #7c3aed);
+          background: linear-gradient(
+            135deg,
+            #4f46e5,
+            #7c3aed
+          );
           color: white;
           font-size: 18px;
           font-weight: 800;
-          box-shadow: 0 7px 18px rgba(79, 70, 229, 0.24);
+          box-shadow:
+            0 7px 18px rgba(79, 70, 229, 0.24);
         }
 
         .brand-info h1 {
@@ -153,7 +171,6 @@ function App() {
           line-height: 20px;
           font-weight: 750;
           color: #111827;
-          letter-spacing: -0.02em;
         }
 
         .brand-info p {
@@ -199,13 +216,9 @@ function App() {
           color: #5b21b6;
           font-size: 12px;
           font-weight: 750;
-          border: 2px solid white;
-          box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
         }
 
-        /* =========================
-           WORKSPACE
-        ========================= */
+        /* WORKSPACE */
 
         .workspace {
           flex: 1;
@@ -213,17 +226,13 @@ function App() {
           display: flex;
         }
 
-        /* =========================
-           SIDEBAR
-        ========================= */
+        /* SIDEBAR */
 
         .sidebar {
           width: 265px;
           flex-shrink: 0;
-          display: flex;
-          flex-direction: column;
           padding: 22px 14px;
-          background: #ffffff;
+          background: white;
           border-right: 1px solid #e7e9ef;
         }
 
@@ -244,9 +253,6 @@ function App() {
         }
 
         .new-button {
-          display: flex;
-          align-items: center;
-          gap: 5px;
           padding: 8px 12px;
           border-radius: 8px;
           background: #4f46e5;
@@ -254,14 +260,12 @@ function App() {
           font-size: 12px;
           font-weight: 700;
           cursor: pointer;
-          transition: all 0.18s ease;
-          box-shadow: 0 4px 10px rgba(79, 70, 229, 0.18);
+          transition: 0.2s;
         }
 
         .new-button:hover {
           background: #4338ca;
           transform: translateY(-1px);
-          box-shadow: 0 6px 14px rgba(79, 70, 229, 0.24);
         }
 
         .documents {
@@ -276,13 +280,13 @@ function App() {
           display: flex;
           align-items: center;
           gap: 10px;
-          padding: 11px 12px;
+          padding: 10px 8px 10px 10px;
           border-radius: 9px;
           background: transparent;
           color: #667085;
           text-align: left;
           cursor: pointer;
-          transition: all 0.18s ease;
+          transition: 0.18s;
         }
 
         .document:hover {
@@ -296,8 +300,8 @@ function App() {
         }
 
         .document-icon {
-          width: 27px;
-          height: 27px;
+          width: 28px;
+          height: 28px;
           flex-shrink: 0;
           display: flex;
           align-items: center;
@@ -312,6 +316,7 @@ function App() {
         }
 
         .document-name {
+          flex: 1;
           min-width: 0;
           overflow: hidden;
           white-space: nowrap;
@@ -324,9 +329,30 @@ function App() {
           font-weight: 700;
         }
 
-        /* =========================
-           EDITOR
-        ========================= */
+        .delete-button {
+          width: 25px;
+          height: 25px;
+          flex-shrink: 0;
+          display: none;
+          align-items: center;
+          justify-content: center;
+          border-radius: 6px;
+          background: transparent;
+          color: #9ca3af;
+          cursor: pointer;
+          font-size: 13px;
+        }
+
+        .document:hover .delete-button {
+          display: flex;
+        }
+
+        .delete-button:hover {
+          background: #fee2e2;
+          color: #dc2626;
+        }
+
+        /* EDITOR */
 
         .editor-area {
           min-width: 0;
@@ -349,7 +375,6 @@ function App() {
 
         .editing-label {
           display: flex;
-          align-items: center;
           gap: 6px;
           font-size: 12px;
           color: #98a0ae;
@@ -368,11 +393,11 @@ function App() {
           font-weight: 600;
         }
 
-        .save-status.saved {
+        .saved {
           color: #16a34a;
         }
 
-        .save-status.saving {
+        .saving {
           color: #d97706;
         }
 
@@ -390,9 +415,7 @@ function App() {
           background: #f59e0b;
         }
 
-        /* =========================
-           FORMATTING BAR
-        ========================= */
+        /* TOOLBAR */
 
         .format-toolbar {
           height: 50px;
@@ -416,24 +439,12 @@ function App() {
           color: #667085;
           font-size: 12px;
           cursor: pointer;
-          transition: all 0.15s ease;
+          transition: 0.15s;
         }
 
         .tool:hover {
           background: #f2f4f7;
           color: #111827;
-        }
-
-        .tool strong {
-          font-size: 13px;
-        }
-
-        .tool em {
-          font-size: 14px;
-        }
-
-        .tool u {
-          font-size: 13px;
         }
 
         .divider {
@@ -443,9 +454,7 @@ function App() {
           background: #e5e7eb;
         }
 
-        /* =========================
-           DOCUMENT AREA
-        ========================= */
+        /* DOCUMENT */
 
         .document-container {
           flex: 1;
@@ -471,7 +480,6 @@ function App() {
         .paper-title {
           width: 100%;
           margin-bottom: 8px;
-          padding: 0;
           border: none;
           outline: none;
           background: transparent;
@@ -487,26 +495,15 @@ function App() {
         }
 
         .paper-subtitle {
-          display: flex;
-          align-items: center;
-          gap: 6px;
           margin-bottom: 34px;
           color: #a0a7b4;
           font-size: 11px;
-        }
-
-        .subtitle-dot {
-          width: 3px;
-          height: 3px;
-          border-radius: 50%;
-          background: #c7ccd5;
         }
 
         .editor {
           display: block;
           width: 100%;
           min-height: 430px;
-          padding: 0;
           border: none;
           outline: none;
           resize: vertical;
@@ -521,13 +518,7 @@ function App() {
           color: #b7bdc8;
         }
 
-        .editor:focus {
-          outline: none;
-        }
-
-        /* =========================
-           FOOTER
-        ========================= */
+        /* FOOTER */
 
         .editor-footer {
           height: 42px;
@@ -561,76 +552,21 @@ function App() {
           font-weight: 750;
         }
 
-        /* =========================
-           SCROLLBAR
-        ========================= */
-
-        ::-webkit-scrollbar {
-          width: 8px;
-          height: 8px;
-        }
-
-        ::-webkit-scrollbar-track {
-          background: transparent;
-        }
-
-        ::-webkit-scrollbar-thumb {
-          background: #d8dce4;
-          border-radius: 10px;
-        }
-
-        ::-webkit-scrollbar-thumb:hover {
-          background: #c2c7d0;
-        }
-
-        /* =========================
-           RESPONSIVE
-        ========================= */
-
-        @media (max-width: 850px) {
+        @media (max-width: 700px) {
           .sidebar {
-            width: 220px;
+            width: 210px;
           }
 
           .paper {
-            padding: 45px 45px 55px;
-          }
-
-          .document-container {
-            padding: 25px 20px;
-          }
-        }
-
-        @media (max-width: 650px) {
-          .sidebar {
-            width: 190px;
+            padding: 35px 30px;
           }
 
           .header {
-            padding: 0 16px;
+            padding: 0 15px;
           }
 
           .connection {
             display: none;
-          }
-
-          .editor-topbar,
-          .format-toolbar,
-          .editor-footer {
-            padding-left: 16px;
-            padding-right: 16px;
-          }
-
-          .paper {
-            padding: 35px 28px 45px;
-          }
-
-          .paper-title {
-            font-size: 26px;
-          }
-
-          .document-container {
-            padding: 18px 12px;
           }
         }
       `}</style>
@@ -644,7 +580,9 @@ function App() {
 
             <div className="brand-info">
               <h1>SyncDoc</h1>
-              <p>Collaborative Document Editor</p>
+              <p>
+                Collaborative Document Editor
+              </p>
             </div>
           </div>
 
@@ -671,8 +609,7 @@ function App() {
                 className="new-button"
                 onClick={createDocument}
               >
-                <span>+</span>
-                New
+                + New
               </button>
             </div>
 
@@ -681,9 +618,13 @@ function App() {
                 <button
                   key={doc.id}
                   className={`document ${
-                    activeId === doc.id ? "active" : ""
+                    activeId === doc.id
+                      ? "active"
+                      : ""
                   }`}
-                  onClick={() => setActiveId(doc.id)}
+                  onClick={() =>
+                    setActiveId(doc.id)
+                  }
                 >
                   <span className="document-icon">
                     📄
@@ -691,6 +632,17 @@ function App() {
 
                   <span className="document-name">
                     {doc.title}
+                  </span>
+
+                  <span
+                    className="delete-button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      deleteDocument(doc.id);
+                    }}
+                    title="Delete document"
+                  >
+                    ×
                   </span>
                 </button>
               ))}
@@ -700,13 +652,13 @@ function App() {
           {/* EDITOR */}
           <main className="editor-area">
 
-            {/* TOP BAR */}
             <div className="editor-topbar">
               <div className="editing-label">
                 <span>Editing</span>
 
                 <strong>
-                  {activeDocument?.title || "Untitled"}
+                  {activeDocument?.title ||
+                    "Untitled"}
                 </strong>
               </div>
 
@@ -730,11 +682,11 @@ function App() {
             {/* TOOLBAR */}
             <div className="format-toolbar">
               <button className="tool">
-                <strong>B</strong>
+                <b>B</b>
               </button>
 
               <button className="tool">
-                <em>I</em>
+                <i>I</i>
               </button>
 
               <button className="tool">
@@ -772,30 +724,37 @@ function App() {
               </button>
             </div>
 
-            {/* DOCUMENT */}
+            {/* PAPER */}
             <div className="document-container">
               <div className="paper">
 
                 <input
                   className="paper-title"
-                  value={activeDocument?.title || ""}
+                  value={
+                    activeDocument?.title || ""
+                  }
                   onChange={(e) =>
-                    updateTitle(e.target.value)
+                    updateTitle(
+                      e.target.value
+                    )
                   }
                   placeholder="Untitled document"
                 />
 
                 <div className="paper-subtitle">
-                  <span>Collaborative document</span>
-                  <span className="subtitle-dot" />
-                  <span>Last edited just now</span>
+                  Collaborative document •
+                  Last edited just now
                 </div>
 
                 <textarea
                   className="editor"
-                  value={activeDocument?.content || ""}
+                  value={
+                    activeDocument?.content || ""
+                  }
                   onChange={(e) =>
-                    updateContent(e.target.value)
+                    updateContent(
+                      e.target.value
+                    )
                   }
                   placeholder="Start writing your document here..."
                 />
@@ -811,7 +770,9 @@ function App() {
 
               <div className="collaborators">
                 <span>Collaborators</span>
-                <span className="mini-avatar">SB</span>
+                <span className="mini-avatar">
+                  SB
+                </span>
               </div>
             </footer>
 
