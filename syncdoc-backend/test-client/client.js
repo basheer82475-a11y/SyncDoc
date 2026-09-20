@@ -1,11 +1,10 @@
 const { io } = require("socket.io-client");
 
 const socket = io("http://127.0.0.1:5000", {
-  transports: ["polling", "websocket"],
-  reconnection: true,
-  reconnectionAttempts: 5,
-  timeout: 10000,
+  transports: ["polling"],
+  reconnection: false,
 });
+
 
 const documentId = "document-1";
 
@@ -15,16 +14,16 @@ socket.on("connect", () => {
   socket.emit("join-document", documentId);
 
   setTimeout(() => {
-    const operation = {
-      operationId: `client1-operation-${Date.now()}`,
-      type: "ADD_BLOCK",
-      documentId,
-      blockId: `block-client1-${Date.now()}`,
-      content: "Hello from Client 1",
-      position: 0,
-      userId: "client-1",
-      timestamp: Date.now(),
-    };
+   const operation = {
+  operationId: `client1-operation-${Date.now()}`,
+  type: "UPDATE_BLOCK",
+  documentId,
+  blockId: "shared-block",
+  content: "Updated by Client 1",
+  position: null,
+  userId: "client-1",
+  timestamp: Date.now(),
+};
 
     console.log("\nClient 1 sending operation:");
     console.log(operation);

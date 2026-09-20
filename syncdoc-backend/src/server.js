@@ -51,7 +51,7 @@ collaborationSocket(io);
 // Start server
 const PORT = process.env.PORT || 5000;
 
-connectDB();
+// connectDB();
 
 server.listen(PORT, () => {
   console.log(`SyncDoc server running on http://localhost:${PORT}`);

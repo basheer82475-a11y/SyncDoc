@@ -1,31 +1,25 @@
-// Temporary in-memory operation history
 const operationHistory = {};
 
-// Add an operation to a document's history
-const addOperationToHistory = (documentId, operation) => {
+const addOperation = (documentId, operation) => {
   if (!operationHistory[documentId]) {
     operationHistory[documentId] = [];
   }
 
   operationHistory[documentId].push(operation);
+
+  return operationHistory[documentId];
 };
 
-// Get all operations for a document
-const getOperationHistory = (documentId) => {
+const getOperations = (documentId) => {
   return operationHistory[documentId] || [];
 };
 
-// Check whether an operation was already received
-const hasOperation = (documentId, operationId) => {
-  const history = operationHistory[documentId] || [];
-
-  return history.some(
-    (operation) => operation.operationId === operationId
-  );
+const clearOperations = (documentId) => {
+  operationHistory[documentId] = [];
 };
 
 module.exports = {
-  addOperationToHistory,
-  getOperationHistory,
-  hasOperation,
+  addOperation,
+  getOperations,
+  clearOperations,
 };
