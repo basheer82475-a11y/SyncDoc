@@ -1,4 +1,3 @@
-
 const {
   createDocumentAST,
 } = require("../services/collaboration/ast.service");
@@ -8,10 +7,10 @@ const {
 } = require("../services/collaboration/operation-processor.service");
 
 const {
-  addOperationToHistory,
-  getOperationHistory,
-  hasOperation,
+  addOperation,
+  getOperations,
 } = require("../services/collaboration/operation-history.service");
+
 // Temporary in-memory state for active document rooms
 const documentStates = {};
 
@@ -46,113 +45,132 @@ const collaborationSocket = (io) => {
 
     // Receive an editing operation
     socket.on(
-  "edit-operation",
-  ({ documentId, operation }) => {
-    try {
-      // Validate the document ID
-      if (!documentId) {
-        throw new Error("Document ID is required");
-      }
+      "edit-operation",
+      ({ documentId, operation }) => {
+        try {
+          // Validate the document ID
+          if (!documentId) {
+            throw new Error("Document ID is required");
+          }
 
-      // Validate the operation
-      if (!operation) {
-        throw new Error("Operation is required");
-      }
+          // Validate the operation
+          if (!operation) {
+            throw new Error("Operation is required");
+          }
 
-      if (!operation.operationId) {
-        throw new Error("Operation ID is required");
-      }
+          if (!operation.operationId) {
+            throw new Error("Operation ID is required");
+          }
 
-      if (!operation.type) {
-        throw new Error("Operation type is required");
-      }
+          if (!operation.type) {
+            throw new Error("Operation type is required");
+          }
 
-      // Prevent duplicate operations
-      if (
-        hasOperation(
-          documentId,
-          operation.operationId
-        )
-      ) {
-        throw new Error("Duplicate operation received");
-      }
+          // Create state if it does not exist
+          if (!documentStates[documentId]) {
+            documentStates[documentId] =
+              createDocumentAST([]);
+          }
 
-      // Create state if it does not exist
-      if (!documentStates[documentId]) {
-        documentStates[documentId] =
-          createDocumentAST([]);
-      }
+          // Check for duplicate operation
+          const existingOperations =
+            getOperations(documentId);
 
-      // Apply operation to the server AST
-      const updatedAST = applyOperation(
-        documentStates[documentId],
-        operation
-      );
+          const duplicateOperation =
+            existingOperations.some(
+              (existingOperation) =>
+                existingOperation.operationId ===
+                operation.operationId
+            );
 
-      // Save updated AST in memory
-      documentStates[documentId] = updatedAST;
+          if (duplicateOperation) {
+            throw new Error(
+              "Duplicate operation received"
+            );
+          }
 
-      // Save operation in history
-      addOperationToHistory(
-        documentId,
-        operation
-      );
+          // Apply operation to the server AST
+         // Get previous operations
+const previousOperations =
+  getOperations(documentId);
 
-      console.log(
-        "Operation received:",
-        operation
-      );
-
-      console.log(
-        "Total operations:",
-        getOperationHistory(documentId).length
-      );
-
-      // Broadcast operation to other users
-      socket.to(documentId).emit(
-        "operation-applied",
-        {
-          operation,
-          ast: updatedAST,
-        }
-      );
-
-      // Confirm operation to the sender
-      socket.emit(
-        "operation-confirmed",
-        {
-          operation,
-          ast: updatedAST,
-        }
-      );
-    } catch (error) {
-      console.error(
-        "Operation error:",
-        error.message
-      );
-
-      socket.emit(
-        "operation-error",
-        {
-          message: error.message,
-        }
-      );
-    }
-  }
+// Apply operation and check for conflicts
+const updatedAST = applyOperation(
+  documentStates[documentId],
+  operation,
+  previousOperations
 );
 
-    // Leave a document room
-    socket.on("leave-document", (documentId) => {
-      socket.leave(documentId);
+          // Save the updated state in memory
+          documentStates[documentId] = updatedAST;
 
-      console.log(
-        `${socket.id} left document room: ${documentId}`
-      );
-    });
+          // Save operation to history
+          addOperation(
+            documentId,
+            operation
+          );
+
+          console.log(
+            "Operation received:",
+            operation
+          );
+
+          console.log(
+            "Total operations:",
+            getOperations(documentId).length
+          );
+
+          // Broadcast operation to other users
+          socket.to(documentId).emit(
+            "operation-applied",
+            {
+              operation,
+              ast: updatedAST,
+            }
+          );
+
+          // Confirm operation to the sender
+          socket.emit(
+            "operation-confirmed",
+            {
+              operation,
+              ast: updatedAST,
+            }
+          );
+        } catch (error) {
+          console.error(
+            "Operation error:",
+            error.message
+          );
+
+          socket.emit(
+            "operation-error",
+            {
+              message: error.message,
+            }
+          );
+        }
+      }
+    );
+
+    // Leave a document room
+    socket.on(
+      "leave-document",
+      (documentId) => {
+        socket.leave(documentId);
+
+        console.log(
+          `${socket.id} left document room: ${documentId}`
+        );
+      }
+    );
 
     // Disconnect user
     socket.on("disconnect", () => {
-      console.log("User disconnected:", socket.id);
+      console.log(
+        "User disconnected:",
+        socket.id
+      );
     });
   });
 };
