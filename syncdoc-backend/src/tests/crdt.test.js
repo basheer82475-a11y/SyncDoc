@@ -1,69 +1,35 @@
-const {
-  createCRDTDocument,
-  createCRDTOperation,
-  addCRDTOperation,
-  getOrderedCRDTOperations,
-} = require("../services/collaboration/crdt.service");
+console.log("=================================");
+console.log("       SyncDoc CRDT Test Suite");
+console.log("=================================\n");
 
-// Create an empty CRDT document
-let crdtDocument = createCRDTDocument();
+console.log("1. Basic CRDT merge");
+require("./crdt-merge.test.js");
 
-console.log("Initial CRDT document:");
-console.log(
-  JSON.stringify(crdtDocument, null, 2)
-);
+console.log("\n---------------------------------\n");
 
-// Create operation from User A
-const operationA = createCRDTOperation({
-  type: "UPDATE_BLOCK",
-  documentId: "document-1",
-  blockId: "shared-block",
-  content: "Updated by User A",
-  userId: "user-a",
-});
+console.log("2. CRDT conflict resolution");
+require("./crdt-conflict.test.js");
 
-// Create operation from User B
-const operationB = createCRDTOperation({
-  type: "UPDATE_BLOCK",
-  documentId: "document-1",
-  blockId: "shared-block",
-  content: "Updated by User B",
-  userId: "user-b",
-});
+console.log("\n---------------------------------\n");
 
-// Add both operations
-crdtDocument = addCRDTOperation(
-  crdtDocument,
-  operationA
-);
+console.log("3. CRDT document merge");
+require("./crdt-merge-documents.test.js");
 
-crdtDocument = addCRDTOperation(
-  crdtDocument,
-  operationB
-);
+console.log("\n---------------------------------\n");
 
-// Get deterministic operation order
-const orderedOperations =
-  getOrderedCRDTOperations(
-    crdtDocument
-  );
+console.log("4. CRDT merge conflict");
+require("./crdt-merge-conflict.test.js");
 
-console.log("\nOrdered CRDT operations:");
+console.log("\n---------------------------------\n");
 
-orderedOperations.forEach(
-  (operation, index) => {
-    console.log(
-      `${index + 1}.`,
-      operation.operationId,
-      "|",
-      operation.userId,
-      "|",
-      operation.content
-    );
-  }
-);
+console.log("5. CRDT to AST conversion");
+require("./crdt-to-ast.test.js");
 
-console.log(
-  "\nTotal operations:",
-  orderedOperations.length
-);
+console.log("\n---------------------------------\n");
+
+console.log("6. CRDT DELETE conflict");
+require("./crdt-delete-conflict.test.js");
+
+console.log("\n=================================");
+console.log("       CRDT tests completed");
+console.log("=================================");
