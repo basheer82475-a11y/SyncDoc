@@ -74,9 +74,8 @@ const documentSchema = new mongoose.Schema(
 );
 
 // Recursive pre-save hook
-documentSchema.pre("save", function (next) {
+documentSchema.pre("save", function () {
   updateParentRelationships(this.blocks);
-  next();
 });
 
 module.exports = mongoose.model(
