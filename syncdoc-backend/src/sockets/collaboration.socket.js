@@ -17,11 +17,20 @@ const {
   crdtToAST,
 } = require("../services/collaboration/crdt.service");
 
+const {
+  createYjsDocument,
+  encodeYjsUpdate,
+  applyYjsUpdate,
+  getYjsDocumentState,
+} = require("../services/collaboration/yjs.service");
+
 // Temporary in-memory state for active document rooms
 const documentStates = {};
 
 // CRDT state for active document rooms
 const crdtDocumentStates = {};
+//Yjs state for active document rooms
+const yjsDocumentStates ={};
 
 const collaborationSocket = (io) => {
   io.on("connection", (socket) => {
@@ -51,6 +60,12 @@ const collaborationSocket = (io) => {
             createCRDTDocument();
         }
 
+        // Create Yjs state
+        if (!yjsDocumentStates[documentId]) {
+          yjsDocumentStates[documentId] =
+            createYjsDocument();
+}
+
         console.log(
           `${socket.id} joined document room: ${documentId}`
         );
@@ -72,6 +87,16 @@ const collaborationSocket = (io) => {
             ast: crdtToAST(
               crdtDocumentStates[documentId]
             ),
+          }
+        );
+        // Send current Yjs state
+        socket.emit(
+          "yjs-document-state",
+          {
+            documentId,
+            state: getYjsDocumentState(
+              yjsDocumentStates[documentId]
+            )
           }
         );
 
@@ -205,6 +230,90 @@ const collaborationSocket = (io) => {
 
           socket.emit(
             "operation-error",
+            {
+              message: error.message,
+            }
+          );
+        }
+      }
+    );
+    // ==========================================
+    // YJS UPDATE
+    // ==========================================
+
+    socket.on(
+      "yjs-update",
+      ({ documentId, update }) => {
+        try {
+          // Validate document ID
+          if (!documentId) {
+            throw new Error(
+              "Document ID is required"
+            );
+          }
+
+          // Validate Yjs update
+          if (!update) {
+            throw new Error(
+              "Yjs update is required"
+            );
+          }
+
+          // Create Yjs state if needed
+          if (!yjsDocumentStates[documentId]) {
+            yjsDocumentStates[documentId] =
+              createYjsDocument();
+          }
+
+          // Convert incoming update to Uint8Array
+          const yjsUpdate =
+            new Uint8Array(update);
+
+          // Apply update to server-side Yjs document
+          applyYjsUpdate(
+            yjsDocumentStates[documentId],
+            yjsUpdate
+          );
+
+          // Get updated state
+          const updatedState =
+            getYjsDocumentState(
+              yjsDocumentStates[documentId]
+            );
+
+          console.log(
+            "Yjs update received for document:",
+            documentId
+          );
+
+          // Send update to other users
+          socket
+            .to(documentId)
+            .emit(
+              "yjs-update-applied",
+              {
+                documentId,
+                update: Array.from(yjsUpdate),
+                state: updatedState,
+              }
+            );
+
+          // Confirm update to sender
+          socket.emit(
+            "yjs-update-confirmed",
+            {
+              documentId,
+              state: updatedState,
+            }
+          );
+        } catch (error) {
+          console.error(
+            "Yjs update error:",
+            error.message
+          );
+
+          socket.emit(
+            "yjs-update-error",
             {
               message: error.message,
             }
