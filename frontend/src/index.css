@@ -16,6 +16,110 @@ body {
   color: #172033;
 }
 
+/* Authentication screen is rendered before the dashboard style block. */
+.auth-screen {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: radial-gradient(circle at 15% 10%, #eeecff, transparent 35%), #f6f7fb;
+}
+
+.auth-panel {
+  width: min(430px, 100%);
+  padding: 42px;
+  border: 1px solid #e4e7ef;
+  border-radius: 18px;
+  background: #ffffff;
+  box-shadow: 0 22px 55px rgba(35, 40, 70, 0.1);
+}
+
+.auth-logo {
+  width: 40px;
+  height: 40px;
+  margin-bottom: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #4f46e5, #7c3aed);
+  color: #ffffff;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.eyebrow {
+  color: #756de0;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+}
+
+.auth-panel h1 {
+  margin-top: 10px;
+  color: #172033;
+  font-size: 30px;
+}
+
+.auth-copy {
+  margin: 10px 0 26px;
+  color: #7d8798;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.auth-form {
+  display: grid;
+  gap: 12px;
+}
+
+.auth-form input {
+  border: 1px solid #e1e5ed;
+  border-radius: 8px;
+  padding: 12px;
+  outline: none;
+}
+
+.auth-form input:focus {
+  border-color: #847be5;
+  box-shadow: 0 0 0 3px #efedff;
+}
+
+.primary-action {
+  border: 0;
+  border-radius: 8px;
+  padding: 12px;
+  background: #635bda;
+  color: #ffffff;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.primary-action:hover {
+  background: #5148c7;
+}
+
+.auth-error {
+  margin-top: 14px;
+  color: #c2410c;
+  font-size: 12px;
+}
+
+.auth-panel .text-action {
+  margin-top: 20px;
+  border: 0;
+  background: transparent;
+  color: #635bda;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.demo-hint {
+  margin-top: 24px;
+  color: #a0a7b5;
+  font-size: 11px;
+}
+
 /* App */
 .app {
   min-height: 100vh;

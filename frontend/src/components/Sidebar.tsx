@@ -2,8 +2,8 @@ import type { Document } from '../App'
 
 type SidebarProps = {
   documents: Document[]
-  activeId: number
-  onSelect: (id: number) => void
+  activeId: string | null
+  onSelect: (id: string) => void
   onCreate: () => void
 }
 
