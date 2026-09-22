@@ -1,100 +1,424 @@
-import { useState } from "react";
-
-export type Document = {
-  id: number;
-  title: string;
-  content: string;
-};
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import {
+  createDocument as createDocumentRequest,
+  deleteDocument as deleteDocumentRequest,
+  getCollaborators,
+  getDocuments,
+  getToken,
+  login,
+  logout,
+  me,
+  register,
+  saveSession,
+  shareDocument,
+  updateDocument,
+} from "./api";
+import type { Collaborator, Document, User } from "./api";
+export type { Document } from "./api";
 
 function App() {
-  const [documents, setDocuments] = useState<Document[]>([
-    {
-      id: 1,
-      title: "Project Requirements",
-      content:
-        "Welcome to SyncDoc. This is a collaborative document editor.\n\nStart writing your document here. Multiple users can edit this document together in real time.",
-    },
-    {
-      id: 2,
-      title: "Meeting Notes",
-      content: "Add your meeting notes here...",
-    },
-    {
-      id: 3,
-      title: "Ideas",
-      content: "Write your project ideas here...",
-    },
-  ]);
-
-  const [activeId, setActiveId] = useState(1);
+  const [documents, setDocuments] = useState<Document[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
   const [saved, setSaved] = useState(true);
+  const [loading, setLoading] = useState(() => Boolean(getToken()));
+  const [error, setError] = useState<string | null>(null);
+  const [user, setUser] = useState<User | null>(null);
+  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [authName, setAuthName] = useState("");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [search, setSearch] = useState("");
+  const [collaborators, setCollaborators] = useState<Collaborator[]>([]);
+  const [shareEmail, setShareEmail] = useState("");
+  const [sharePermission, setSharePermission] = useState<"editor" | "viewer">("editor");
+  const [connected, setConnected] = useState(false);
+
+  const [history, setHistory] = useState<string[]>([]);
+  const [future, setFuture] = useState<string[]>([]);
+
+  const editorRef = useRef<HTMLTextAreaElement>(null);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const socketRef = useRef<WebSocket | null>(null);
 
   const activeDocument = documents.find(
     (doc) => doc.id === activeId
   );
 
-  const updateContent = (content: string) => {
-    setDocuments((docs) =>
-      docs.map((doc) =>
-        doc.id === activeId
-          ? { ...doc, content }
-          : doc
-      )
-    );
+  const loadDocuments = (query = "") => {
+    return getDocuments(query)
+      .then((loadedDocuments) => {
+        setDocuments(loadedDocuments);
+        setActiveId(loadedDocuments[0]?.id ?? null);
+      })
+      .catch((requestError: unknown) => {
+        setError(requestError instanceof Error ? requestError.message : "Unable to load documents.");
+      })
+      .finally(() => setLoading(false));
+  };
 
+  useEffect(() => {
+    if (!getToken()) return;
+    me().then(setUser).catch(() => { localStorage.removeItem("syncdoc-token"); setLoading(false); });
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    loadDocuments();
+  }, [user]);
+
+  useEffect(() => {
+    if (!activeId || !user) return;
+    getCollaborators(activeId).then(setCollaborators).catch(() => setCollaborators([]));
+    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+    const socket = new WebSocket(`${protocol}://${window.location.host}/ws?documentId=${activeId}`);
+    socketRef.current = socket;
+    socket.onopen = () => setConnected(true);
+    socket.onclose = () => setConnected(false);
+    socket.onmessage = (event) => {
+      const message = JSON.parse(event.data) as { type: string; document?: Document; actorId?: string };
+      if (message.type === "document-updated" && message.document && message.actorId !== user.id) {
+        setDocuments((current) => current.map((document) => document.id === message.document!.id ? message.document! : document));
+      }
+    };
+    return () => socket.close();
+  }, [activeId, user]);
+
+  useEffect(() => () => {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    socketRef.current?.close();
+  }, []);
+
+  const queueSave = (document: Document) => {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     setSaved(false);
+    saveTimerRef.current = setTimeout(() => {
+      updateDocument(document)
+        .then((savedDocument) => {
+          setDocuments((current) => current.map((item) => item.id === savedDocument.id ? savedDocument : item));
+          setSaved(true);
+          setError(null);
+        })
+        .catch((requestError: unknown) => {
+          setSaved(false);
+          setError(requestError instanceof Error ? requestError.message : "Unable to save document.");
+        });
+    }, 500);
+  };
 
-    setTimeout(() => {
-      setSaved(true);
-    }, 700);
+  const updateContent = (content: string) => {
+    if (!activeDocument) return;
+    const oldContent = activeDocument.content;
+
+    setHistory((prev) => [...prev, oldContent]);
+    setFuture([]);
+
+    const updatedDocument = { ...activeDocument, content };
+    setDocuments((docs) => docs.map((doc) => doc.id === activeId ? updatedDocument : doc));
+    queueSave(updatedDocument);
   };
 
   const updateTitle = (title: string) => {
+    if (!activeDocument) return;
+    const updatedDocument = { ...activeDocument, title };
+    setDocuments((docs) => docs.map((doc) => doc.id === activeId ? updatedDocument : doc));
+    queueSave(updatedDocument);
+  };
+
+  const createDocument = async () => {
+    try {
+      const newDocument = await createDocumentRequest({
+        title: `Untitled Document ${documents.length + 1}`,
+        content: "Start writing your document here...",
+      });
+      setDocuments((docs) => [...docs, newDocument]);
+      setActiveId(newDocument.id);
+      setError(null);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Unable to create document.");
+    }
+  };
+
+  const deleteDocument = async (id: string) => {
+    try {
+      await deleteDocumentRequest(id);
+      const remainingDocuments = documents.filter((doc) => doc.id !== id);
+      setDocuments(remainingDocuments);
+      if (id === activeId) setActiveId(remainingDocuments[0]?.id ?? null);
+      setError(null);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Unable to delete document.");
+    }
+  };
+
+  const submitAuth = async (event: FormEvent) => {
+    event.preventDefault();
+    try {
+      const response = authMode === "login"
+        ? await login(authEmail, authPassword)
+        : await register(authName, authEmail, authPassword);
+      setUser(saveSession(response));
+      setError(null);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Unable to authenticate.");
+    }
+  };
+
+  const handleLogout = async () => {
+    try { await logout(); } catch { /* local session is still cleared */ }
+    localStorage.removeItem("syncdoc-token");
+    setUser(null);
+    setDocuments([]);
+  };
+
+  const handleShare = async () => {
+    if (!activeId || !shareEmail.trim()) return;
+    try {
+      await shareDocument(activeId, shareEmail, sharePermission);
+      setShareEmail("");
+      setCollaborators(await getCollaborators(activeId));
+      setError(null);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Unable to share document.");
+    }
+  };
+
+  const replaceSelectedText = (
+    before: string,
+    after = before
+  ) => {
+    const editor = editorRef.current;
+
+    if (!editor || !activeDocument) {
+      return;
+    }
+
+    const start = editor.selectionStart;
+    const end = editor.selectionEnd;
+
+    const selectedText =
+      activeDocument.content.slice(start, end);
+
+    const newText =
+      activeDocument.content.slice(0, start) +
+      before +
+      selectedText +
+      after +
+      activeDocument.content.slice(end);
+
+    updateContent(newText);
+
+    setTimeout(() => {
+      editor.focus();
+
+      editor.setSelectionRange(
+        start + before.length,
+        end + before.length
+      );
+    }, 0);
+  };
+
+  const makeHeading = (level: 1 | 2) => {
+    const editor = editorRef.current;
+
+    if (!editor || !activeDocument) {
+      return;
+    }
+
+    const start = editor.selectionStart;
+    const end = editor.selectionEnd;
+
+    const content = activeDocument.content;
+
+    const lineStart =
+      content.lastIndexOf("\n", start - 1) + 1;
+
+    const selectedEnd =
+      content.indexOf("\n", end);
+
+    const lineEnd =
+      selectedEnd === -1
+        ? content.length
+        : selectedEnd;
+
+    const selectedLines =
+      content.slice(lineStart, lineEnd);
+
+    const prefix =
+      level === 1 ? "# " : "## ";
+
+    const lines = selectedLines.split("\n");
+
+    const formattedLines = lines.map((line) => {
+      const cleanLine = line.replace(
+        /^#{1,2}\s/,
+        ""
+      );
+
+      return prefix + cleanLine;
+    });
+
+    const newText =
+      content.slice(0, lineStart) +
+      formattedLines.join("\n") +
+      content.slice(lineEnd);
+
+    updateContent(newText);
+
+    setTimeout(() => {
+      editor.focus();
+
+      editor.setSelectionRange(
+        lineStart,
+        lineStart + formattedLines.join("\n").length
+      );
+    }, 0);
+  };
+
+  const makeList = (numbered: boolean) => {
+    const editor = editorRef.current;
+
+    if (!editor || !activeDocument) {
+      return;
+    }
+
+    const start = editor.selectionStart;
+    const end = editor.selectionEnd;
+
+    const content = activeDocument.content;
+
+    const lineStart =
+      content.lastIndexOf("\n", start - 1) + 1;
+
+    const selectedEnd =
+      content.indexOf("\n", end);
+
+    const lineEnd =
+      selectedEnd === -1
+        ? content.length
+        : selectedEnd;
+
+    const selectedLines =
+      content.slice(lineStart, lineEnd);
+
+    const lines = selectedLines.split("\n");
+
+    const formattedLines = lines.map(
+      (line, index) => {
+        const cleanLine = line.replace(
+          /^([-*]|\d+\.)\s/,
+          ""
+        );
+
+        if (numbered) {
+          return `${index + 1}. ${cleanLine}`;
+        }
+
+        return `- ${cleanLine}`;
+      }
+    );
+
+    const newText =
+      content.slice(0, lineStart) +
+      formattedLines.join("\n") +
+      content.slice(lineEnd);
+
+    updateContent(newText);
+
+    setTimeout(() => {
+      editor.focus();
+
+      editor.setSelectionRange(
+        lineStart,
+        lineStart + formattedLines.join("\n").length
+      );
+    }, 0);
+  };
+
+  const undo = () => {
+    if (history.length === 0 || !activeDocument) {
+      return;
+    }
+
+    const previousContent =
+      history[history.length - 1];
+
+    setHistory((prev) =>
+      prev.slice(0, -1)
+    );
+
+    setFuture((prev) => [
+      ...prev,
+      activeDocument.content,
+    ]);
+
     setDocuments((docs) =>
       docs.map((doc) =>
         doc.id === activeId
-          ? { ...doc, title }
+          ? {
+              ...doc,
+              content: previousContent,
+            }
           : doc
       )
     );
 
-    setSaved(false);
-
-    setTimeout(() => {
-      setSaved(true);
-    }, 700);
+    queueSave({ ...activeDocument, content: previousContent });
   };
 
-  const createDocument = () => {
-    const newDocument: Document = {
-      id: Date.now(),
-      title: `Untitled Document ${documents.length + 1}`,
-      content: "Start writing your document here...",
-    };
-
-    setDocuments((docs) => [
-      ...docs,
-      newDocument,
-    ]);
-
-    setActiveId(newDocument.id);
-  };
-
-  const deleteDocument = (id: number) => {
-    if (documents.length === 1) {
+  const redo = () => {
+    if (future.length === 0 || !activeDocument) {
       return;
     }
 
-    const remainingDocuments = documents.filter(
-      (doc) => doc.id !== id
+    const nextContent =
+      future[future.length - 1];
+
+    setFuture((prev) =>
+      prev.slice(0, -1)
     );
 
-    setDocuments(remainingDocuments);
+    setHistory((prev) => [
+      ...prev,
+      activeDocument.content,
+    ]);
 
-    if (id === activeId) {
-      setActiveId(remainingDocuments[0].id);
-    }
+    setDocuments((docs) =>
+      docs.map((doc) =>
+        doc.id === activeId
+          ? {
+              ...doc,
+              content: nextContent,
+            }
+          : doc
+      )
+    );
+
+    queueSave({ ...activeDocument, content: nextContent });
   };
+
+  if (!user) {
+    return (
+      <div className="auth-screen">
+        <div className="auth-panel">
+          <div className="logo auth-logo">S</div>
+          <p className="eyebrow">SYNC YOUR WORK</p>
+          <h1>{authMode === "login" ? "Welcome back" : "Create your workspace"}</h1>
+          <p className="auth-copy">A calm, collaborative place for the documents that move your work forward.</p>
+          <form onSubmit={submitAuth} className="auth-form">
+            {authMode === "register" && <input value={authName} onChange={(event) => setAuthName(event.target.value)} placeholder="Full name" required />}
+            <input value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} type="email" placeholder="Email address" required />
+            <input value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} type="password" placeholder="Password (6+ characters)" minLength={6} required />
+            <button className="primary-action" type="submit">{authMode === "login" ? "Log in" : "Create account"}</button>
+          </form>
+          {error && <p className="auth-error" role="alert">{error}</p>}
+          <button className="text-action" onClick={() => { setAuthMode(authMode === "login" ? "register" : "login"); setError(null); }}>
+            {authMode === "login" ? "New to SyncDoc? Create an account" : "Already have an account? Log in"}
+          </button>
+          <p className="demo-hint">Use registration to create a demo account.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <>
@@ -128,8 +452,6 @@ function App() {
           overflow: hidden;
         }
 
-        /* HEADER */
-
         .header {
           height: 68px;
           flex-shrink: 0;
@@ -162,8 +484,6 @@ function App() {
           color: white;
           font-size: 18px;
           font-weight: 800;
-          box-shadow:
-            0 7px 18px rgba(79, 70, 229, 0.24);
         }
 
         .brand-info h1 {
@@ -185,6 +505,57 @@ function App() {
           gap: 18px;
         }
 
+        .header-user {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          color: #526075;
+          font-size: 12px;
+          font-weight: 600;
+        }
+
+        .logout-button, .text-action {
+          border: 0;
+          background: transparent;
+          color: #635bda;
+          cursor: pointer;
+          font-weight: 650;
+        }
+
+        .logout-button { font-size: 12px; }
+
+        .search-input, .share-input {
+          width: 100%;
+          border: 1px solid #e1e5ed;
+          border-radius: 8px;
+          padding: 9px 10px;
+          outline: none;
+          color: #253047;
+          background: #fbfcfe;
+        }
+
+        .search-input:focus, .share-input:focus, .auth-form input:focus { border-color: #847be5; box-shadow: 0 0 0 3px #efedff; }
+
+        .sidebar-search { margin: 0 0 14px; }
+        .empty-state { padding: 24px 10px; color: #9299a8; font-size: 12px; line-height: 1.6; text-align: center; }
+        .share-panel { display: flex; align-items: center; gap: 8px; padding: 8px 28px; background: #fbfcff; border-bottom: 1px solid #e7e9ef; }
+        .share-panel select { border: 1px solid #e1e5ed; border-radius: 7px; padding: 8px; background: white; color: #526075; }
+        .share-button { padding: 8px 12px; border-radius: 7px; background: #635bda; color: white; cursor: pointer; font-weight: 650; }
+        .collaborator-list { display: flex; gap: 5px; align-items: center; color: #9299a8; font-size: 11px; }
+        .collaborator-chip { padding: 4px 7px; background: #efedff; color: #635bda; border-radius: 10px; }
+        .auth-screen { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: radial-gradient(circle at 15% 10%, #eeecff, transparent 35%), #f6f7fb; }
+        .auth-panel { width: min(430px, 100%); padding: 42px; border: 1px solid #e4e7ef; border-radius: 18px; background: white; box-shadow: 0 22px 55px rgba(35, 40, 70, .1); }
+        .auth-logo { margin-bottom: 28px; }
+        .eyebrow { color: #756de0; font-size: 11px; font-weight: 800; letter-spacing: .14em; }
+        .auth-panel h1 { margin-top: 10px; color: #172033; font-size: 30px; }
+        .auth-copy { margin: 10px 0 26px; color: #7d8798; font-size: 14px; line-height: 1.6; }
+        .auth-form { display: grid; gap: 12px; }
+        .auth-form input { border: 1px solid #e1e5ed; border-radius: 8px; padding: 12px; outline: none; }
+        .primary-action { border: 0; border-radius: 8px; padding: 12px; background: #635bda; color: white; cursor: pointer; font-weight: 700; }
+        .auth-error { margin-top: 14px; color: #c2410c; font-size: 12px; }
+        .auth-panel .text-action { margin-top: 20px; font-size: 12px; }
+        .demo-hint { margin-top: 24px; color: #a0a7b5; font-size: 11px; }
+
         .connection {
           display: flex;
           align-items: center;
@@ -202,7 +573,6 @@ function App() {
           height: 7px;
           border-radius: 50%;
           background: #22c55e;
-          box-shadow: 0 0 0 3px #dcfce7;
         }
 
         .avatar {
@@ -218,15 +588,11 @@ function App() {
           font-weight: 750;
         }
 
-        /* WORKSPACE */
-
         .workspace {
           flex: 1;
           min-height: 0;
           display: flex;
         }
-
-        /* SIDEBAR */
 
         .sidebar {
           width: 265px;
@@ -260,12 +626,10 @@ function App() {
           font-size: 12px;
           font-weight: 700;
           cursor: pointer;
-          transition: 0.2s;
         }
 
         .new-button:hover {
           background: #4338ca;
-          transform: translateY(-1px);
         }
 
         .documents {
@@ -280,13 +644,12 @@ function App() {
           display: flex;
           align-items: center;
           gap: 10px;
-          padding: 10px 8px 10px 10px;
+          padding: 10px;
           border-radius: 9px;
           background: transparent;
           color: #667085;
           text-align: left;
           cursor: pointer;
-          transition: 0.18s;
         }
 
         .document:hover {
@@ -322,17 +685,11 @@ function App() {
           white-space: nowrap;
           text-overflow: ellipsis;
           font-size: 13px;
-          font-weight: 550;
-        }
-
-        .document.active .document-name {
-          font-weight: 700;
         }
 
         .delete-button {
           width: 25px;
           height: 25px;
-          flex-shrink: 0;
           display: none;
           align-items: center;
           justify-content: center;
@@ -340,7 +697,6 @@ function App() {
           background: transparent;
           color: #9ca3af;
           cursor: pointer;
-          font-size: 13px;
         }
 
         .document:hover .delete-button {
@@ -352,14 +708,20 @@ function App() {
           color: #dc2626;
         }
 
-        /* EDITOR */
-
         .editor-area {
           min-width: 0;
           flex: 1;
           display: flex;
           flex-direction: column;
           background: #f6f7fb;
+        }
+
+        .error-state {
+          padding: 10px 28px;
+          background: #fff7ed;
+          color: #c2410c;
+          border-bottom: 1px solid #fed7aa;
+          font-size: 12px;
         }
 
         .editor-topbar {
@@ -382,7 +744,6 @@ function App() {
 
         .editing-label strong {
           color: #374151;
-          font-weight: 650;
         }
 
         .save-status {
@@ -415,8 +776,6 @@ function App() {
           background: #f59e0b;
         }
 
-        /* TOOLBAR */
-
         .format-toolbar {
           height: 50px;
           flex-shrink: 0;
@@ -429,7 +788,7 @@ function App() {
         }
 
         .tool {
-          width: 32px;
+          width: 34px;
           height: 31px;
           display: flex;
           align-items: center;
@@ -439,7 +798,6 @@ function App() {
           color: #667085;
           font-size: 12px;
           cursor: pointer;
-          transition: 0.15s;
         }
 
         .tool:hover {
@@ -453,8 +811,6 @@ function App() {
           margin: 0 8px;
           background: #e5e7eb;
         }
-
-        /* DOCUMENT */
 
         .document-container {
           flex: 1;
@@ -490,10 +846,6 @@ function App() {
           letter-spacing: -0.035em;
         }
 
-        .paper-title::placeholder {
-          color: #c4c8d0;
-        }
-
         .paper-subtitle {
           margin-bottom: 34px;
           color: #a0a7b4;
@@ -509,7 +861,6 @@ function App() {
           resize: vertical;
           background: transparent;
           color: #3f4755;
-          font-family: inherit;
           font-size: 15px;
           line-height: 1.9;
         }
@@ -517,8 +868,6 @@ function App() {
         .editor::placeholder {
           color: #b7bdc8;
         }
-
-        /* FOOTER */
 
         .editor-footer {
           height: 42px;
@@ -561,10 +910,6 @@ function App() {
             padding: 35px 30px;
           }
 
-          .header {
-            padding: 0 15px;
-          }
-
           .connection {
             display: none;
           }
@@ -573,7 +918,6 @@ function App() {
 
       <div className="app">
 
-        {/* HEADER */}
         <header className="header">
           <div className="brand">
             <div className="logo">S</div>
@@ -589,17 +933,21 @@ function App() {
           <div className="header-right">
             <div className="connection">
               <span className="connection-dot" />
-              Connected
+              {connected ? "Live" : "Offline"}
             </div>
 
-            <div className="avatar">SB</div>
+            <div className="header-user">
+              <div className="avatar">{user.name.slice(0, 2).toUpperCase()}</div>
+              <span>{user.name}</span>
+              <button className="logout-button" onClick={handleLogout}>Log out</button>
+            </div>
           </div>
         </header>
 
         <div className="workspace">
 
-          {/* SIDEBAR */}
           <aside className="sidebar">
+
             <div className="sidebar-top">
               <span className="sidebar-title">
                 Documents
@@ -613,7 +961,12 @@ function App() {
               </button>
             </div>
 
+            <div className="sidebar-search">
+              <input className="search-input" value={search} onChange={(event) => { setSearch(event.target.value); setLoading(true); loadDocuments(event.target.value); }} placeholder="Search documents" aria-label="Search documents" />
+            </div>
+
             <div className="documents">
+              {documents.length === 0 && !loading && <div className="empty-state">No documents found.<br />Create one to start writing.</div>}
               {documents.map((doc) => (
                 <button
                   key={doc.id}
@@ -640,17 +993,26 @@ function App() {
                       event.stopPropagation();
                       deleteDocument(doc.id);
                     }}
-                    title="Delete document"
                   >
                     ×
                   </span>
                 </button>
               ))}
             </div>
+
           </aside>
 
-          {/* EDITOR */}
           <main className="editor-area">
+
+            {loading && (
+              <div className="error-state">Loading documents...</div>
+            )}
+
+            {error && (
+              <div className="error-state" role="alert">
+                {error}
+              </div>
+            )}
 
             <div className="editor-topbar">
               <div className="editing-label">
@@ -675,57 +1037,117 @@ function App() {
                   }`}
                 />
 
-                {saved ? "Saved" : "Saving..."}
+                {error
+                  ? "Save failed"
+                  : saved
+                  ? "Saved"
+                  : "Saving..."}
               </div>
             </div>
 
-            {/* TOOLBAR */}
             <div className="format-toolbar">
-              <button className="tool">
+
+              <button
+                className="tool"
+                title="Bold"
+                onClick={() =>
+                  replaceSelectedText("**")
+                }
+              >
                 <b>B</b>
               </button>
 
-              <button className="tool">
+              <button
+                className="tool"
+                title="Italic"
+                onClick={() =>
+                  replaceSelectedText("*")
+                }
+              >
                 <i>I</i>
               </button>
 
-              <button className="tool">
+              <button
+                className="tool"
+                title="Underline"
+                onClick={() =>
+                  replaceSelectedText("__")
+                }
+              >
                 <u>U</u>
               </button>
 
               <span className="divider" />
 
-              <button className="tool">
+              <button
+                className="tool"
+                title="Heading 1"
+                onClick={() => makeHeading(1)}
+              >
                 H1
               </button>
 
-              <button className="tool">
+              <button
+                className="tool"
+                title="Heading 2"
+                onClick={() => makeHeading(2)}
+              >
                 H2
               </button>
 
               <span className="divider" />
 
-              <button className="tool">
-                ☷
+              <button
+                className="tool"
+                title="Bullet List"
+                onClick={() =>
+                  makeList(false)
+                }
+              >
+                •☷
               </button>
 
-              <button className="tool">
-                ☰
+              <button
+                className="tool"
+                title="Numbered List"
+                onClick={() =>
+                  makeList(true)
+                }
+              >
+                1.
               </button>
 
               <span className="divider" />
 
-              <button className="tool">
+              <button
+                className="tool"
+                title="Undo"
+                onClick={undo}
+              >
                 ↶
               </button>
 
-              <button className="tool">
+              <button
+                className="tool"
+                title="Redo"
+                onClick={redo}
+              >
                 ↷
               </button>
+
             </div>
 
-            {/* PAPER */}
+            {activeDocument && <div className="share-panel">
+              <input className="share-input" value={shareEmail} onChange={(event) => setShareEmail(event.target.value)} placeholder="Share with email" aria-label="Share with email" />
+              <select value={sharePermission} onChange={(event) => setSharePermission(event.target.value as "editor" | "viewer")} aria-label="Permission">
+                <option value="editor">Can edit</option>
+                <option value="viewer">Can view</option>
+              </select>
+              <button className="share-button" onClick={handleShare}>Share</button>
+            </div>}
+
             <div className="document-container">
+
               <div className="paper">
 
                 <input
@@ -747,6 +1169,7 @@ function App() {
                 </div>
 
                 <textarea
+                  ref={editorRef}
                   className="editor"
                   value={
                     activeDocument?.content || ""
@@ -760,9 +1183,9 @@ function App() {
                 />
 
               </div>
+
             </div>
 
-            {/* FOOTER */}
             <footer className="editor-footer">
               <span>
                 SyncDoc • Collaborative workspace
@@ -770,9 +1193,9 @@ function App() {
 
               <div className="collaborators">
                 <span>Collaborators</span>
-                <span className="mini-avatar">
-                  SB
-                </span>
+                <div className="collaborator-list">
+                  {collaborators.slice(0, 3).map((collaborator) => <span className="collaborator-chip" key={collaborator.id}>{collaborator.name}</span>)}
+                </div>
               </div>
             </footer>
 
