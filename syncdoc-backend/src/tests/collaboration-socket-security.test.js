@@ -28,10 +28,19 @@ const close = (server, io, sockets) =>
 const run = async () => {
   const server = http.createServer();
   const io = new Server(server, { cors: { origin: "*" } });
+  const savedOperations = new Map();
   collaborationSocket(io, {
     canAccessDocument: async ({ user, permission }) =>
       user.userId === "authenticated-user" ||
       (user.userId === "viewer-user" && permission === "viewer"),
+    loadDocumentOperations: async (documentId) => savedOperations.get(documentId) || [],
+    saveDocumentOperation: async (documentId, operation) => {
+      const operations = savedOperations.get(documentId) || [];
+      operations.push(operation);
+      savedOperations.set(documentId, operations);
+    },
+    loadYjsUpdates: async () => [],
+    saveYjsUpdate: async () => {},
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
 
@@ -83,6 +92,14 @@ const run = async () => {
     client.emit("join-document", documentId);
     await joined;
 
+    error = waitForEvent(otherClient, "yjs-update-error");
+    otherClient.emit("yjs-update", { documentId, update: [] });
+    assert.match((await error).message, /Join the document/);
+
+    error = waitForEvent(client, "yjs-update-error");
+    client.emit("yjs-update", { documentId, update: [] });
+    assert.match((await error).message, /Yjs update must contain/);
+
     error = waitForEvent(otherClient, "operation-error");
     otherClient.emit("join-document", documentId);
     assert.match((await error).message, /do not have access/);
@@ -90,6 +107,10 @@ const run = async () => {
     const viewerJoined = waitForEvent(viewerClient, "crdt-document-state");
     viewerClient.emit("join-document", documentId);
     await viewerJoined;
+
+    error = waitForEvent(viewerClient, "yjs-update-error");
+    viewerClient.emit("yjs-update", { documentId, update: [] });
+    assert.match((await error).message, /do not have access/);
 
     error = waitForEvent(viewerClient, "crdt-operation-error");
     viewerClient.emit("crdt-operation", { documentId, operation: baseOperation });
@@ -114,7 +135,7 @@ const run = async () => {
     const accepted = await confirmation;
     assert.strictEqual(accepted.operation.userId, "authenticated-user");
     assert.notStrictEqual(accepted.operation.timestamp, baseOperation.timestamp);
-    assert.match(accepted.operation.operationId, new RegExp(`^${client.id}:`));
+    assert.match(accepted.operation.operationId, /^authenticated-user:/);
 
     error = waitForEvent(client, "crdt-operation-error");
     client.emit("crdt-operation", { documentId, operation: baseOperation });
