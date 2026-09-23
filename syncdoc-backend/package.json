@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "nodemon src/server.js"
+    "dev": "nodemon src/server.js",
+    "test:integration": "node src/tests/login-socket-integration.test.js",
+    "test:persistence-failure": "node src/tests/collaboration-persistence-failure.test.js"
   },
   "keywords": [],
   "author": "",
