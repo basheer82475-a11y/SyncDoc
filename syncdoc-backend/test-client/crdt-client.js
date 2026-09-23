@@ -1,14 +1,33 @@
 const { io } = require("socket.io-client");
 
+const {
+  createCRDTDocument,
+  applyCRDTOperation,
+  crdtToAST,
+} = require("../src/services/collaboration/crdt.service");
+
+const token = process.env.SOCKET_TOKEN;
+
+if (!token) {
+  throw new Error("Set SOCKET_TOKEN to a valid JWT before running this client");
+}
+
 const socket = io(
   "http://127.0.0.1:5000",
   {
     transports: ["polling"],
+    auth: { token },
   }
 );
 
 const documentId = "crdt-shared-document";
 const userId = "user-a";
+
+let localCRDTDocument = createCRDTDocument();
+
+// ==========================================
+// CONNECT
+// ==========================================
 
 socket.on("connect", () => {
   console.log(
@@ -27,6 +46,10 @@ socket.on("connect", () => {
   );
 });
 
+// ==========================================
+// INITIAL CRDT DOCUMENT STATE
+// ==========================================
+
 socket.on(
   "crdt-document-state",
   (data) => {
@@ -41,6 +64,10 @@ socket.on(
         2
       )
     );
+
+    // A joining client must start from the server's canonical CRDT snapshot,
+    // not from a fresh empty document.
+    localCRDTDocument = data.crdt;
 
     // Create a CRDT ADD operation
     const operation = {
@@ -76,9 +103,17 @@ socket.on(
   }
 );
 
+// ==========================================
+// CRDT OPERATION CONFIRMED
+// ==========================================
+
 socket.on(
   "crdt-operation-confirmed",
   (data) => {
+    // The confirmation carries the canonical state, including any operation
+    // that reached the server immediately before this one.
+    localCRDTDocument = data.crdt;
+
     console.log(
       "\nCRDT operation confirmed:"
     );
@@ -92,12 +127,42 @@ socket.on(
     );
 
     console.log(
-      "\nCRDT client test completed."
+      "\nClient A local CRDT state:"
+    );
+
+    console.log(
+      JSON.stringify(
+        localCRDTDocument,
+        null,
+        2
+      )
+    );
+
+    console.log(
+      "\nClient A local AST:"
+    );
+
+    console.log(
+      JSON.stringify(
+        crdtToAST(
+          localCRDTDocument
+        ),
+        null,
+        2
+      )
+    );
+
+    console.log(
+      "\nCRDT Client A test completed."
     );
 
     socket.disconnect();
   }
 );
+
+// ==========================================
+// CRDT OPERATION FROM OTHER USER
+// ==========================================
 
 socket.on(
   "crdt-operation-applied",
@@ -113,8 +178,46 @@ socket.on(
         2
       )
     );
+
+    // Apply the received operation
+    // to Client A's local CRDT.
+    localCRDTDocument =
+      applyCRDTOperation(
+        localCRDTDocument,
+        data.operation
+      );
+
+    console.log(
+      "\nClient A local CRDT state:"
+    );
+
+    console.log(
+      JSON.stringify(
+        localCRDTDocument,
+        null,
+        2
+      )
+    );
+
+    console.log(
+      "\nClient A local AST:"
+    );
+
+    console.log(
+      JSON.stringify(
+        crdtToAST(
+          localCRDTDocument
+        ),
+        null,
+        2
+      )
+    );
   }
 );
+
+// ==========================================
+// CRDT ERROR
+// ==========================================
 
 socket.on(
   "crdt-operation-error",
@@ -123,11 +226,13 @@ socket.on(
       "\nCRDT operation error:"
     );
 
-    console.error(
-      data
-    );
+    console.error(data);
   }
 );
+
+// ==========================================
+// CONNECTION ERROR
+// ==========================================
 
 socket.on(
   "connect_error",

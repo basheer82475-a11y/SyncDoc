@@ -1,34 +1,203 @@
 const {
-  createDocumentAST,
-} = require("../services/collaboration/ast.service");
-
-const {
-  applyOperation,
-} = require("../services/collaboration/operation-processor.service");
-
-const {
-  addOperation,
-  getOperations,
-} = require("../services/collaboration/operation-history.service");
-
-const {
   createCRDTDocument,
   applyCRDTOperation,
   crdtToAST,
 } = require("../services/collaboration/crdt.service");
+const jwt = require("jsonwebtoken");
+const {
+  hasDocumentAccess,
+} = require("../services/collaboration/document-access.service");
 
-// Temporary in-memory state for active document rooms
+// Cached AST snapshots are kept for backwards-compatible clients.  The CRDT
+// document is the authoritative state for every room.
 const documentStates = {};
 
 // CRDT state for active document rooms
 const crdtDocumentStates = {};
 
-const collaborationSocket = (io) => {
+const SUPPORTED_OPERATION_TYPES = new Set([
+  "ADD_BLOCK",
+  "UPDATE_BLOCK",
+  "DELETE_BLOCK",
+]);
+
+const MAX_DOCUMENT_ID_LENGTH = 200;
+const MAX_BLOCK_ID_LENGTH = 200;
+const MAX_OPERATION_ID_LENGTH = 200;
+const MAX_CONTENT_LENGTH = 100_000;
+
+const isSafeIdentifier = (value, maxLength) =>
+  typeof value === "string" &&
+  value.length > 0 &&
+  value.length <= maxLength &&
+  value.trim() === value &&
+  !/[\u0000-\u001F\u007F]/.test(value);
+
+const ensureDocumentState = (documentId) => {
+  if (!crdtDocumentStates[documentId]) {
+    crdtDocumentStates[documentId] = createCRDTDocument();
+  }
+
+  documentStates[documentId] = crdtToAST(
+    crdtDocumentStates[documentId]
+  );
+
+  return {
+    crdt: crdtDocumentStates[documentId],
+    ast: documentStates[documentId],
+  };
+};
+
+const applyDocumentOperation = (documentId, operation) => {
+  const { crdt } = ensureDocumentState(documentId);
+
+  if (crdt.operations[operation.operationId]) {
+    throw new Error("Duplicate operation received");
+  }
+
+  crdtDocumentStates[documentId] = applyCRDTOperation(crdt, operation);
+  documentStates[documentId] = crdtToAST(crdtDocumentStates[documentId]);
+
+  return {
+    crdt: crdtDocumentStates[documentId],
+    ast: documentStates[documentId],
+  };
+};
+
+const validateOperation = (socket, documentId, operation, label) => {
+  const prefix = label ? `${label} ` : "";
+
+  if (!isSafeIdentifier(documentId, MAX_DOCUMENT_ID_LENGTH)) {
+    throw new Error("A valid document ID is required");
+  }
+
+  if (!socket.rooms.has(documentId)) {
+    throw new Error("Join the document before sending operations");
+  }
+
+  if (!operation) {
+    throw new Error(`${prefix}operation is required`);
+  }
+
+  if (!isSafeIdentifier(operation.operationId, MAX_OPERATION_ID_LENGTH)) {
+    throw new Error(`${prefix}operation ID is required`);
+  }
+
+  if (!SUPPORTED_OPERATION_TYPES.has(operation.type)) {
+    throw new Error(`Unsupported operation type: ${operation.type}`);
+  }
+
+  if (!isSafeIdentifier(operation.blockId, MAX_BLOCK_ID_LENGTH)) {
+    throw new Error(`${prefix}block ID is required`);
+  }
+
+  if (operation.documentId && operation.documentId !== documentId) {
+    throw new Error(`${prefix}operation document ID must match the room`);
+  }
+
+  if (
+    (operation.type === "ADD_BLOCK" || operation.type === "UPDATE_BLOCK") &&
+    (typeof operation.content !== "string" ||
+      operation.content.length > MAX_CONTENT_LENGTH)
+  ) {
+    throw new Error(`${prefix}operation content must be a string of at most ${MAX_CONTENT_LENGTH} characters`);
+  }
+
+  if (
+    operation.position !== null &&
+    operation.position !== undefined &&
+    (!Number.isSafeInteger(operation.position) || operation.position < 0)
+  ) {
+    throw new Error(`${prefix}operation position must be a non-negative integer`);
+  }
+};
+
+const canonicalizeOperation = (socket, documentId, operation) => {
+  const { crdt } = ensureDocumentState(documentId);
+  const latestTimestamp = Object.values(crdt.operations).reduce(
+    (latest, existingOperation) => Math.max(latest, existingOperation.timestamp),
+    0
+  );
+
+  return {
+    ...operation,
+    // Client clocks and identity claims are untrusted. The server assigns both
+    // before the operation is allowed to influence conflict resolution.
+    operationId: `${socket.id}:${operation.operationId}`,
+    documentId,
+    userId: socket.data.user.userId,
+    timestamp: Math.max(Date.now(), latestTimestamp + 1),
+  };
+};
+
+const getHandshakeToken = (socket) => {
+  const authToken = socket.handshake.auth?.token;
+  if (typeof authToken === "string" && authToken.length > 0) {
+    return authToken;
+  }
+
+  const authorization = socket.handshake.headers.authorization;
+  if (typeof authorization !== "string") {
+    return null;
+  }
+
+  const [scheme, token] = authorization.split(" ");
+  return scheme === "Bearer" && token ? token : null;
+};
+
+const authenticateSocket = (socket, next) => {
+  const token = getHandshakeToken(socket);
+  const secret = process.env.JWT_SECRET;
+
+  if (!secret) {
+    next(new Error("Socket authentication is not configured"));
+    return;
+  }
+
+  if (!token) {
+    next(new Error("Authentication required"));
+    return;
+  }
+
+  try {
+    const payload = jwt.verify(token, secret);
+    if (!payload || typeof payload.userId !== "string" || !payload.userId) {
+      throw new Error("Invalid token subject");
+    }
+
+    socket.data.user = {
+      userId: payload.userId,
+      role: payload.role,
+    };
+    next();
+  } catch {
+    next(new Error("Authentication failed"));
+  }
+};
+
+const collaborationSocket = (
+  io,
+  { canAccessDocument = hasDocumentAccess } = {}
+) => {
+  io.use(authenticateSocket);
+
   io.on("connection", (socket) => {
     console.log(
       "User connected:",
       socket.id
     );
+
+    const requireDocumentAccess = async (documentId, permission) => {
+      const isAllowed = await canAccessDocument({
+        user: socket.data.user,
+        documentId,
+        permission,
+      });
+
+      if (!isAllowed) {
+        throw new Error("You do not have access to this document");
+      }
+    };
 
     // ==========================================
     // JOIN DOCUMENT
@@ -36,54 +205,54 @@ const collaborationSocket = (io) => {
 
     socket.on(
       "join-document",
-      (documentId) => {
-        socket.join(documentId);
+      async (documentId) => {
+        try {
+          if (!isSafeIdentifier(documentId, MAX_DOCUMENT_ID_LENGTH)) {
+            throw new Error("A valid document ID is required");
+          }
 
-        // Create traditional AST state
-        if (!documentStates[documentId]) {
-          documentStates[documentId] =
-            createDocumentAST([]);
-        }
+          await requireDocumentAccess(documentId, "viewer");
 
-        // Create CRDT state
-        if (!crdtDocumentStates[documentId]) {
-          crdtDocumentStates[documentId] =
-            createCRDTDocument();
-        }
+          socket.join(documentId);
+          const state = ensureDocumentState(documentId);
 
-        console.log(
-          `${socket.id} joined document room: ${documentId}`
-        );
+          console.log(
+            `${socket.id} joined document room: ${documentId}`
+          );
 
         // Send current AST to joining user
-        socket.emit(
-          "document-state",
-          {
-            documentId,
-            ast: documentStates[documentId],
-          }
-        );
-
-        // Send current CRDT-derived AST
-        socket.emit(
-          "crdt-document-state",
-          {
-            documentId,
-            ast: crdtToAST(
-              crdtDocumentStates[documentId]
-            ),
-          }
-        );
-
-        // Notify other users
-        socket
-          .to(documentId)
-          .emit(
-            "user-joined",
+          socket.emit(
+            "document-state",
             {
-              userId: socket.id,
+              documentId,
+              ast: state.ast,
+              crdt: state.crdt,
             }
           );
+
+        // Send current CRDT-derived AST
+          socket.emit(
+            "crdt-document-state",
+            {
+              documentId,
+              ast: state.ast,
+              crdt: state.crdt,
+            }
+          );
+
+        // Notify other users
+          socket
+            .to(documentId)
+            .emit(
+              "user-joined",
+              {
+                userId: socket.data.user.userId,
+                documentId,
+              }
+            );
+        } catch (error) {
+          socket.emit("operation-error", { message: error.message });
+        }
       }
     );
 
@@ -93,89 +262,29 @@ const collaborationSocket = (io) => {
 
     socket.on(
       "edit-operation",
-      ({ documentId, operation }) => {
+      async ({ documentId, operation } = {}) => {
         try {
-          // Validate document ID
-          if (!documentId) {
-            throw new Error(
-              "Document ID is required"
-            );
-          }
-
-          // Validate operation
-          if (!operation) {
-            throw new Error(
-              "Operation is required"
-            );
-          }
-
-          if (!operation.operationId) {
-            throw new Error(
-              "Operation ID is required"
-            );
-          }
-
-          if (!operation.type) {
-            throw new Error(
-              "Operation type is required"
-            );
-          }
-
-          // Create AST state if needed
-          if (!documentStates[documentId]) {
-            documentStates[documentId] =
-              createDocumentAST([]);
-          }
-
-          // Check duplicate operation
-          const existingOperations =
-            getOperations(documentId);
-
-          const duplicateOperation =
-            existingOperations.some(
-              (existingOperation) =>
-                existingOperation.operationId ===
-                operation.operationId
-            );
-
-          if (duplicateOperation) {
-            throw new Error(
-              "Duplicate operation received"
-            );
-          }
-
-          // Get previous operations
-          const previousOperations =
-            getOperations(documentId);
-
-          // Apply operation
-          const updatedAST =
-            applyOperation(
-              documentStates[documentId],
-              operation,
-              previousOperations
-            );
-
-          // Save AST state
-          documentStates[documentId] =
-            updatedAST;
-
-          // Save operation history
-          addOperation(
+          validateOperation(socket, documentId, operation, "");
+          await requireDocumentAccess(documentId, "editor");
+          const canonicalOperation = canonicalizeOperation(
+            socket,
             documentId,
             operation
           );
 
-          console.log(
-            "Operation received:",
-            operation
+          const { ast: updatedAST, crdt } = applyDocumentOperation(
+            documentId,
+            canonicalOperation
           );
 
           console.log(
-            "Total operations:",
-            getOperations(
-              documentId
-            ).length
+            "Operation received:",
+            canonicalOperation
+          );
+
+          console.log(
+            "Total CRDT operations:",
+            Object.keys(crdt.operations).length
           );
 
           // Broadcast to other users
@@ -184,17 +293,30 @@ const collaborationSocket = (io) => {
             .emit(
               "operation-applied",
               {
-                operation,
+                documentId,
+                operation: canonicalOperation,
                 ast: updatedAST,
+                crdt,
               }
             );
+
+          // CRDT clients receive the same canonical update when a legacy
+          // client edits the document.
+          socket.to(documentId).emit("crdt-operation-applied", {
+            documentId,
+            operation: canonicalOperation,
+            ast: updatedAST,
+            crdt,
+          });
 
           // Confirm to sender
           socket.emit(
             "operation-confirmed",
             {
-              operation,
+              documentId,
+              operation: canonicalOperation,
               ast: updatedAST,
+              crdt,
             }
           );
         } catch (error) {
@@ -219,79 +341,22 @@ const collaborationSocket = (io) => {
 
     socket.on(
       "crdt-operation",
-      ({ documentId, operation }) => {
+      async ({ documentId, operation } = {}) => {
         try {
-          // Validate document ID
-          if (!documentId) {
-            throw new Error(
-              "Document ID is required"
-            );
-          }
+          validateOperation(socket, documentId, operation, "CRDT");
+          await requireDocumentAccess(documentId, "editor");
+          const canonicalOperation = canonicalizeOperation(
+            socket,
+            documentId,
+            operation
+          );
 
-          // Validate operation
-          if (!operation) {
-            throw new Error(
-              "CRDT operation is required"
-            );
-          }
-
-          if (!operation.operationId) {
-            throw new Error(
-              "CRDT operation ID is required"
-            );
-          }
-
-          if (!operation.type) {
-            throw new Error(
-              "CRDT operation type is required"
-            );
-          }
-
-          if (!operation.blockId) {
-            throw new Error(
-              "CRDT block ID is required"
-            );
-          }
-
-          // Create CRDT state if needed
-          if (!crdtDocumentStates[documentId]) {
-            crdtDocumentStates[documentId] =
-              createCRDTDocument();
-          }
-
-          // Check duplicate operation
-          const existingOperation =
-            crdtDocumentStates[documentId]
-              .operations[
-                operation.operationId
-              ];
-
-          if (existingOperation) {
-            throw new Error(
-              "Duplicate CRDT operation received"
-            );
-          }
-
-          // Apply CRDT operation
-          const updatedCRDTDocument =
-            applyCRDTOperation(
-              crdtDocumentStates[documentId],
-              operation
-            );
-
-          // Save CRDT state
-          crdtDocumentStates[documentId] =
-            updatedCRDTDocument;
-
-          // Convert CRDT state to AST
-          const updatedAST =
-            crdtToAST(
-              updatedCRDTDocument
-            );
+          const { ast: updatedAST, crdt: updatedCRDTDocument } =
+            applyDocumentOperation(documentId, canonicalOperation);
 
           console.log(
             "CRDT operation received:",
-            operation
+            canonicalOperation
           );
 
           console.log(
@@ -307,17 +372,30 @@ const collaborationSocket = (io) => {
             .emit(
               "crdt-operation-applied",
               {
-                operation,
+                documentId,
+                operation: canonicalOperation,
                 ast: updatedAST,
+                crdt: updatedCRDTDocument,
               }
             );
+
+          // Keep clients that still consume the original collaboration event
+          // in sync with CRDT-originated changes.
+          socket.to(documentId).emit("operation-applied", {
+            documentId,
+            operation: canonicalOperation,
+            ast: updatedAST,
+            crdt: updatedCRDTDocument,
+          });
 
           // Confirm CRDT operation to sender
           socket.emit(
             "crdt-operation-confirmed",
             {
-              operation,
+              documentId,
+              operation: canonicalOperation,
               ast: updatedAST,
+              crdt: updatedCRDTDocument,
             }
           );
         } catch (error) {

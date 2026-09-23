@@ -1,15 +1,28 @@
 const { io } = require("socket.io-client");
 
+const {
+  createCRDTDocument,
+  applyCRDTOperation,
+  crdtToAST,
+} = require("../src/services/collaboration/crdt.service");
+
+const token = process.env.SOCKET_TOKEN;
+
+if (!token) {
+  throw new Error("Set SOCKET_TOKEN to a valid JWT before running this client");
+}
+
 const socket = io(
   "http://127.0.0.1:5000",
   {
     transports: ["polling"],
+    auth: { token },
   }
 );
 
 const documentId = "crdt-shared-document";
 const userId = "user-b";
-
+let localCRDTDocument = createCRDTDocument();
 socket.on("connect", () => {
   console.log(
     "Client B connected:",
@@ -41,6 +54,9 @@ socket.on(
         2
       )
     );
+
+    // Hydrate from the canonical room state before applying live operations.
+    localCRDTDocument = data.crdt;
 
     // User B creates a block
     const operation = {
@@ -90,12 +106,49 @@ socket.on(
         2
       )
     );
+
+    // Apply the received operation to Client B's local CRDT
+    localCRDTDocument =
+      applyCRDTOperation(
+        localCRDTDocument,
+        data.operation
+      );
+
+    console.log(
+      "\nClient B local CRDT state:"
+    );
+
+    console.log(
+      JSON.stringify(
+        localCRDTDocument,
+        null,
+        2
+      )
+    );
+
+    console.log(
+      "\nClient B local AST:"
+    );
+
+    console.log(
+      JSON.stringify(
+        crdtToAST(
+          localCRDTDocument
+        ),
+        null,
+        2
+      )
+    );
   }
 );
 
 socket.on(
   "crdt-operation-confirmed",
   (data) => {
+    // Adopt the authoritative snapshot after our own operation, since the
+    // sender does not receive its operation through the room broadcast.
+    localCRDTDocument = data.crdt;
+
     console.log(
       "\nClient B operation confirmed:"
     );
