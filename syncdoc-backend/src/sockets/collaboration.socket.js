@@ -10,10 +10,19 @@ const {
 
 // Cached AST snapshots are kept for backwards-compatible clients.  The CRDT
 // document is the authoritative state for every room.
+const {
+  createYjsDocument,
+  applyYjsUpdate,
+  getYjsDocumentState,
+} = require("../services/collaboration/yjs.service");
+
+// Temporary in-memory state for active document rooms
 const documentStates = {};
 
 // CRDT state for active document rooms
 const crdtDocumentStates = {};
+// Yjs state for active document rooms
+const yjsDocumentStates = {};
 
 const SUPPORTED_OPERATION_TYPES = new Set([
   "ADD_BLOCK",
@@ -216,21 +225,18 @@ const collaborationSocket = (
           socket.join(documentId);
           const state = ensureDocumentState(documentId);
 
-          console.log(
-            `${socket.id} joined document room: ${documentId}`
-          );
+          if (!yjsDocumentStates[documentId]) {
+            yjsDocumentStates[documentId] = createYjsDocument();
+          }
 
-        // Send current AST to joining user
-          socket.emit(
-            "document-state",
-            {
-              documentId,
-              ast: state.ast,
-              crdt: state.crdt,
-            }
-          );
+          console.log(`${socket.id} joined document room: ${documentId}`);
 
-        // Send current CRDT-derived AST
+          // Send current states to the joining client.
+          socket.emit("document-state", {
+            documentId,
+            ast: state.ast,
+          });
+
           socket.emit(
             "crdt-document-state",
             {
@@ -240,7 +246,13 @@ const collaborationSocket = (
             }
           );
 
-        // Notify other users
+          socket.emit("yjs-document-state", {
+            documentId,
+            state: getYjsDocumentState(yjsDocumentStates[documentId]),
+          });
+
+          // Notify existing room members after the new member has received
+          // their initial state.
           socket
             .to(documentId)
             .emit(
@@ -327,6 +339,90 @@ const collaborationSocket = (
 
           socket.emit(
             "operation-error",
+            {
+              message: error.message,
+            }
+          );
+        }
+      }
+    );
+    // ==========================================
+    // YJS UPDATE
+    // ==========================================
+
+    socket.on(
+      "yjs-update",
+      ({ documentId, update }) => {
+        try {
+          // Validate document ID
+          if (!documentId) {
+            throw new Error(
+              "Document ID is required"
+            );
+          }
+
+          // Validate Yjs update
+          if (!update) {
+            throw new Error(
+              "Yjs update is required"
+            );
+          }
+
+          // Create Yjs state if needed
+          if (!yjsDocumentStates[documentId]) {
+            yjsDocumentStates[documentId] =
+              createYjsDocument();
+          }
+
+          // Convert incoming update to Uint8Array
+          const yjsUpdate =
+            new Uint8Array(update);
+
+          // Apply update to server-side Yjs document
+          applyYjsUpdate(
+            yjsDocumentStates[documentId],
+            yjsUpdate
+          );
+
+          // Get updated state
+          const updatedState =
+            getYjsDocumentState(
+              yjsDocumentStates[documentId]
+            );
+
+          console.log(
+            "Yjs update received for document:",
+            documentId
+          );
+
+          // Send update to other users
+          socket
+            .to(documentId)
+            .emit(
+              "yjs-update-applied",
+              {
+                documentId,
+                update: Array.from(yjsUpdate),
+                state: updatedState,
+              }
+            );
+
+          // Confirm update to sender
+          socket.emit(
+            "yjs-update-confirmed",
+            {
+              documentId,
+              state: updatedState,
+            }
+          );
+        } catch (error) {
+          console.error(
+            "Yjs update error:",
+            error.message
+          );
+
+          socket.emit(
+            "yjs-update-error",
             {
               message: error.message,
             }
