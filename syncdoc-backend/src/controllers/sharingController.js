@@ -1,4 +1,4 @@
-const Permission = require("../models/Permission");
+const Permission = require("../models/permission");
 
 // Share a document with a user
 const shareDocument = async (req, res) => {
