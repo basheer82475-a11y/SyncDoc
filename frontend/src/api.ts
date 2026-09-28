@@ -7,7 +7,9 @@ export type Document = {
   updatedAt: string
 }
 
-export type User = { id: string; name: string; email: string }
+export type AccountStatus = 'active' | 'blocked' | 'banned'
+export type User = { id: string; name: string; email: string; role?: 'user' | 'admin'; status?: AccountStatus }
+export type RegisteredUser = Pick<User, 'id' | 'name' | 'email' | 'role'> & { status: AccountStatus; createdAt: string }
 export type Collaborator = User & { permission: 'owner' | 'editor' | 'viewer' }
 export type AuthResponse = { token: string; user: User }
 
@@ -70,3 +72,11 @@ export function deleteDocument(id: string) {
 
 export function shareDocument(id: string, email: string, permission: 'editor' | 'viewer') { return request<{ email: string; name: string; permission: string }>(`${apiUrl}/${id}/share`, { method: 'POST', body: JSON.stringify({ email, permission }) }) }
 export function getCollaborators(id: string) { return request<Collaborator[]>(`${apiUrl}/${id}/collaborators`) }
+export function removeCollaborator(documentId: string, userId: string) { return request<void>(`/api/sharing/${encodeURIComponent(documentId)}/${encodeURIComponent(userId)}`, { method: 'DELETE' }) }
+export function getRegisteredUsers() { return request<{ users: RegisteredUser[] }>('/api/admin/users').then((response) => response.users) }
+export function setRegisteredUserStatus(id: string, status: AccountStatus) {
+  return request<{ user: RegisteredUser }>(`/api/admin/users/${encodeURIComponent(id)}/status`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status }),
+  }).then((response) => response.user)
+}

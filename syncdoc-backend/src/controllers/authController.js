@@ -2,13 +2,28 @@ const User = require("../module/user");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
+const createToken = (user) => jwt.sign(
+    { userId: user._id, role: user.role },
+    process.env.JWT_SECRET,
+    { expiresIn: "1d" }
+);
+
+const publicUser = (user) => ({
+    id: user._id.toString(),
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    status: user.status || "active"
+});
+
 // Register
 const register = async (req, res) => {
     try {
         const { name, email, password } = req.body;
+        const normalizedEmail = String(email || "").trim().toLowerCase();
 
         // Check if user already exists
-        const existingUser = await User.findOne({ email });
+        const existingUser = await User.findOne({ email: normalizedEmail });
 
         if (existingUser) {
             return res.status(400).json({
@@ -22,18 +37,15 @@ const register = async (req, res) => {
         // Create user
         const user = await User.create({
             name,
-            email,
+            email: normalizedEmail,
             password: hashedPassword
         });
 
+        const token = createToken(user);
         res.status(201).json({
             message: "User registered successfully",
-            user: {
-                id: user._id,
-                name: user.name,
-                email: user.email,
-                role: user.role
-            }
+            token,
+            user: publicUser(user)
         });
 
     } catch (error) {
@@ -49,7 +61,7 @@ const login = async (req, res) => {
     try {
         const { email, password } = req.body;
 
-        const user = await User.findOne({ email });
+        const user = await User.findOne({ email: email.trim().toLowerCase() });
 
         if (!user) {
             return res.status(400).json({
@@ -68,20 +80,16 @@ const login = async (req, res) => {
             });
         }
 
-        const token = jwt.sign(
-            {
-                userId: user._id,
-                role: user.role
-            },
-            process.env.JWT_SECRET,
-            {
-                expiresIn: "1d"
-            }
-        );
+        if (user.status === "blocked" || user.status === "banned") {
+            return res.status(403).json({
+                message: user.status === "banned" ? "This account has been banned" : "This account has been blocked"
+            });
+        }
 
         res.json({
             message: "Login successful",
-            token
+            token: createToken(user),
+            user: publicUser(user)
         });
 
     } catch (error) {
@@ -92,7 +100,12 @@ const login = async (req, res) => {
     }
 };
 
+const getCurrentUser = (req, res) => res.json(publicUser(req.user));
+const logout = (req, res) => res.status(204).end();
+
 module.exports = {
     register,
-    login
+    login,
+    getCurrentUser,
+    logout
 };
