@@ -67,6 +67,17 @@ const documentSchema = new mongoose.Schema(
       type: [blockSchema],
       default: [],
     },
+
+    // Collaboration snapshots share the document lifecycle and are restored
+    // when the first editor joins after a server restart.
+    collaborationState: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
+    collaborationYjsState: {
+      type: Buffer,
+      default: null,
+    },
   },
   {
     timestamps: true,

@@ -14,6 +14,7 @@ const {
   createYjsDocument,
   applyYjsUpdate,
   getYjsDocumentState,
+  encodeYjsUpdate,
 } = require("../services/collaboration/yjs.service");
 const { loadDocumentOperations, saveDocumentOperation } = require("../services/collaboration/crdt-persistence.service");
 const { loadYjsUpdates, saveYjsUpdate } = require("../services/collaboration/yjs-persistence.service");
@@ -28,7 +29,11 @@ const MAX_DOCUMENT_ID_LENGTH = 200;
 const MAX_BLOCK_ID_LENGTH = 200;
 const MAX_OPERATION_ID_LENGTH = 200;
 const MAX_CONTENT_LENGTH = 100_000;
+
+const DEFAULT_BLOCK_LOCK_DURATION_MS = 60_000;
+
 const MAX_YJS_UPDATE_BYTES = 1_000_000;
+
 
 const isSafeIdentifier = (value, maxLength) =>
   typeof value === "string" &&
@@ -134,12 +139,61 @@ const collaborationSocket = (
   io,
   {
     canAccessDocument = hasDocumentAccess,
+
+    blockLockDurationMs = DEFAULT_BLOCK_LOCK_DURATION_MS,
+    persistence = null,
+
     loadDocumentOperations: loadPersistedOperations = loadDocumentOperations,
     saveDocumentOperation: savePersistedOperation = saveDocumentOperation,
     loadYjsUpdates: loadPersistedYjsUpdates = loadYjsUpdates,
     saveYjsUpdate: savePersistedYjsUpdate = saveYjsUpdate,
+
   } = {}
 ) => {
+  // Locks live only in this process and expire automatically. The socket ID
+  // distinguishes separate sessions belonging to the same authenticated user.
+  const blockLocks = new Map();
+  const lockKey = (documentId, blockId) => `${documentId}\u0000${blockId}`;
+  const getActiveLock = (documentId, blockId) => {
+    const key = lockKey(documentId, blockId);
+    const lock = blockLocks.get(key);
+    if (lock && lock.expiresAt <= Date.now()) {
+      blockLocks.delete(key);
+      io.to(documentId).emit("block-unlocked", { documentId, blockId, reason: "expired" });
+      return null;
+    }
+    return lock;
+  };
+
+  const restoreDocumentState = async (documentId) => {
+    if (!persistence || crdtDocumentStates[documentId]) return;
+    const saved = await persistence.loadDocumentState(documentId);
+    if (saved?.crdt) {
+      crdtDocumentStates[documentId] = saved.crdt;
+      documentStates[documentId] = crdtToAST(saved.crdt);
+    } else {
+      ensureDocumentState(documentId);
+    }
+    if (!yjsDocumentStates[documentId]) {
+      yjsDocumentStates[documentId] = createYjsDocument();
+      if (saved?.yjsUpdate) {
+        applyYjsUpdate(yjsDocumentStates[documentId], saved.yjsUpdate);
+      }
+    }
+  };
+
+  const saveDocumentState = async (documentId) => {
+    if (!persistence) return;
+    const yjsUpdate = yjsDocumentStates[documentId]
+      ? encodeYjsUpdate(yjsDocumentStates[documentId])
+      : undefined;
+    await persistence.persistDocumentState(
+      documentId,
+      crdtDocumentStates[documentId] || createCRDTDocument(),
+      yjsUpdate
+    );
+  };
+
   io.use(authenticateSocket);
 
   const documentStates = new Map();
@@ -251,6 +305,74 @@ const collaborationSocket = (
       }
     };
 
+    const validateLockTarget = (documentId, blockId) => {
+      if (!isSafeIdentifier(documentId, MAX_DOCUMENT_ID_LENGTH)) {
+        throw new Error("A valid document ID is required");
+      }
+      if (!isSafeIdentifier(blockId, MAX_BLOCK_ID_LENGTH)) {
+        throw new Error("A valid block ID is required");
+      }
+      if (!socket.rooms.has(documentId)) {
+        throw new Error("Join the document before locking blocks");
+      }
+    };
+
+    socket.on("lock-block", async ({ documentId, blockId } = {}) => {
+      try {
+        validateLockTarget(documentId, blockId);
+        await requireDocumentAccess(documentId, "editor");
+        const existing = getActiveLock(documentId, blockId);
+        if (existing && existing.socketId !== socket.id) {
+          throw new Error("Block is already locked by another user");
+        }
+        const lock = {
+          documentId,
+          blockId,
+          userId: socket.data.user.userId,
+          socketId: socket.id,
+          expiresAt: Date.now() + blockLockDurationMs,
+        };
+        blockLocks.set(lockKey(documentId, blockId), lock);
+        io.to(documentId).emit("block-locked", {
+          documentId, blockId, userId: lock.userId, expiresAt: lock.expiresAt,
+        });
+      } catch (error) {
+        socket.emit("block-lock-error", { message: error.message });
+      }
+    });
+
+    socket.on("unlock-block", async ({ documentId, blockId } = {}) => {
+      try {
+        validateLockTarget(documentId, blockId);
+        await requireDocumentAccess(documentId, "editor");
+        const key = lockKey(documentId, blockId);
+        const lock = getActiveLock(documentId, blockId);
+        if (!lock) throw new Error("Block is not locked");
+        if (lock.socketId !== socket.id) {
+          throw new Error("Only the lock owner can unlock this block");
+        }
+        blockLocks.delete(key);
+        io.to(documentId).emit("block-unlocked", { documentId, blockId, userId: lock.userId });
+      } catch (error) {
+        socket.emit("block-lock-error", { message: error.message });
+      }
+    });
+
+    const rejectLockedBlockEdit = (documentId, operation) => {
+      const lock = getActiveLock(documentId, operation.blockId);
+      if (lock && lock.socketId !== socket.id) {
+        throw new Error("Block is locked by another user");
+      }
+    };
+
+    const rejectYjsUpdateWhileLocked = (documentId) => {
+      for (const lock of blockLocks.values()) {
+        if (lock.documentId === documentId && getActiveLock(documentId, lock.blockId)) {
+          throw new Error("Yjs updates are paused while a document block is locked");
+        }
+      }
+    };
+
     // ==========================================
     // JOIN DOCUMENT
     // ==========================================
@@ -265,7 +387,12 @@ const collaborationSocket = (
 
           await requireDocumentAccess(documentId, "viewer");
 
+
+          if (persistence) await restoreDocumentState(documentId);
+
+
           const state = await loadDocumentState(documentId);
+
           socket.join(documentId);
 
           const yjsDocument = await loadYjsDocumentState(documentId);
@@ -319,13 +446,16 @@ const collaborationSocket = (
         try {
           validateOperation(socket, documentId, operation, "");
           await requireDocumentAccess(documentId, "editor");
+          rejectLockedBlockEdit(documentId, operation);
           await loadDocumentState(documentId);
+
           const canonicalOperation = canonicalizeOperation(
             socket,
             documentId,
             operation
           );
 
+          const previousCRDT = crdtDocumentStates[documentId];
           assertOperationIsNew(documentId, canonicalOperation);
           await savePersistedOperation(documentId, canonicalOperation);
 
@@ -333,6 +463,14 @@ const collaborationSocket = (
             documentId,
             canonicalOperation
           );
+
+          try {
+            await saveDocumentState(documentId);
+          } catch (error) {
+            crdtDocumentStates[documentId] = previousCRDT;
+            documentStates[documentId] = crdtToAST(previousCRDT);
+            throw error;
+          }
 
           console.log(
             "Operation received:",
@@ -407,6 +545,20 @@ const collaborationSocket = (
             throw new Error("Join the document before sending updates");
           }
 
+          if (!isSafeIdentifier(documentId, MAX_DOCUMENT_ID_LENGTH)) {
+            throw new Error("A valid document ID is required");
+          }
+          if (!socket.rooms.has(documentId)) {
+            throw new Error("Join the document before sending updates");
+          }
+          await requireDocumentAccess(documentId, "editor");
+          rejectYjsUpdateWhileLocked(documentId);
+
+          // Create Yjs state if needed
+          if (!yjsDocumentStates[documentId]) {
+            yjsDocumentStates[documentId] =
+              createYjsDocument();
+
           await requireDocumentAccess(documentId, "editor");
 
           // Validate Yjs update
@@ -423,6 +575,27 @@ const collaborationSocket = (
 
           const yjsUpdate = new Uint8Array(update);
 
+          const previousYjsUpdate = persistence && yjsDocumentStates[documentId]
+            ? encodeYjsUpdate(yjsDocumentStates[documentId])
+            : null;
+
+          // Apply update to server-side Yjs document
+          applyYjsUpdate(
+            yjsDocumentStates[documentId],
+            yjsUpdate
+          );
+
+          try {
+            await saveDocumentState(documentId);
+          } catch (error) {
+            yjsDocumentStates[documentId] = createYjsDocument();
+            // The incoming update has not been acknowledged. Rebuild from the
+            // state held before applying it when a write fails.
+            if (previousYjsUpdate) {
+              applyYjsUpdate(yjsDocumentStates[documentId], previousYjsUpdate);
+            }
+            throw error;
+          }
           // Reject malformed Yjs payloads before they enter the durable log.
           const validationDocument = createYjsDocument();
           try {
@@ -496,6 +669,7 @@ const collaborationSocket = (
         try {
           validateOperation(socket, documentId, operation, "CRDT");
           await requireDocumentAccess(documentId, "editor");
+          rejectLockedBlockEdit(documentId, operation);
           await loadDocumentState(documentId);
           const canonicalOperation = canonicalizeOperation(
             socket,
@@ -503,11 +677,20 @@ const collaborationSocket = (
             operation
           );
 
+          const previousCRDT = crdtDocumentStates[documentId];
           assertOperationIsNew(documentId, canonicalOperation);
           await savePersistedOperation(documentId, canonicalOperation);
 
           const { ast: updatedAST, crdt: updatedCRDTDocument } =
             applyDocumentOperation(documentId, canonicalOperation);
+
+          try {
+            await saveDocumentState(documentId);
+          } catch (error) {
+            crdtDocumentStates[documentId] = previousCRDT;
+            documentStates[documentId] = crdtToAST(previousCRDT);
+            throw error;
+          }
 
           console.log(
             "CRDT operation received:",
@@ -591,6 +774,16 @@ const collaborationSocket = (
     socket.on(
       "disconnect",
       () => {
+        for (const [key, lock] of blockLocks) {
+          if (lock.socketId === socket.id) {
+            blockLocks.delete(key);
+            io.to(lock.documentId).emit("block-unlocked", {
+              documentId: lock.documentId, blockId: lock.blockId,
+              userId: lock.userId, reason: "disconnected",
+            });
+          }
+
+        }
         console.log(
           "User disconnected:",
           socket.id
