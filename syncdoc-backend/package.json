@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "nodemon src/server.js"
+    "dev": "nodemon src/server.js",
+    "test:collaboration": "node src/tests/collaboration-socket-crdt.test.js && node src/tests/collaboration-socket-security.test.js && node src/tests/collaboration-locking.test.js && node src/tests/collaboration-stress.test.js",
+    "test:persistence": "node src/tests/collaboration-persistence.test.js"
   },
   "keywords": [],
   "author": "",
