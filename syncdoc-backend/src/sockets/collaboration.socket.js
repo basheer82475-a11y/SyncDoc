@@ -16,14 +16,8 @@ const {
   getYjsDocumentState,
   encodeYjsUpdate,
 } = require("../services/collaboration/yjs.service");
-
-// Temporary in-memory state for active document rooms
-const documentStates = {};
-
-// CRDT state for active document rooms
-const crdtDocumentStates = {};
-// Yjs state for active document rooms
-const yjsDocumentStates = {};
+const { loadDocumentOperations, saveDocumentOperation } = require("../services/collaboration/crdt-persistence.service");
+const { loadYjsUpdates, saveYjsUpdate } = require("../services/collaboration/yjs-persistence.service");
 
 const SUPPORTED_OPERATION_TYPES = new Set([
   "ADD_BLOCK",
@@ -35,7 +29,11 @@ const MAX_DOCUMENT_ID_LENGTH = 200;
 const MAX_BLOCK_ID_LENGTH = 200;
 const MAX_OPERATION_ID_LENGTH = 200;
 const MAX_CONTENT_LENGTH = 100_000;
+
 const DEFAULT_BLOCK_LOCK_DURATION_MS = 60_000;
+
+const MAX_YJS_UPDATE_BYTES = 1_000_000;
+
 
 const isSafeIdentifier = (value, maxLength) =>
   typeof value === "string" &&
@@ -43,37 +41,6 @@ const isSafeIdentifier = (value, maxLength) =>
   value.length <= maxLength &&
   value.trim() === value &&
   !/[\u0000-\u001F\u007F]/.test(value);
-
-const ensureDocumentState = (documentId) => {
-  if (!crdtDocumentStates[documentId]) {
-    crdtDocumentStates[documentId] = createCRDTDocument();
-  }
-
-  documentStates[documentId] = crdtToAST(
-    crdtDocumentStates[documentId]
-  );
-
-  return {
-    crdt: crdtDocumentStates[documentId],
-    ast: documentStates[documentId],
-  };
-};
-
-const applyDocumentOperation = (documentId, operation) => {
-  const { crdt } = ensureDocumentState(documentId);
-
-  if (crdt.operations[operation.operationId]) {
-    throw new Error("Duplicate operation received");
-  }
-
-  crdtDocumentStates[documentId] = applyCRDTOperation(crdt, operation);
-  documentStates[documentId] = crdtToAST(crdtDocumentStates[documentId]);
-
-  return {
-    crdt: crdtDocumentStates[documentId],
-    ast: documentStates[documentId],
-  };
-};
 
 const validateOperation = (socket, documentId, operation, label) => {
   const prefix = label ? `${label} ` : "";
@@ -121,24 +88,6 @@ const validateOperation = (socket, documentId, operation, label) => {
   ) {
     throw new Error(`${prefix}operation position must be a non-negative integer`);
   }
-};
-
-const canonicalizeOperation = (socket, documentId, operation) => {
-  const { crdt } = ensureDocumentState(documentId);
-  const latestTimestamp = Object.values(crdt.operations).reduce(
-    (latest, existingOperation) => Math.max(latest, existingOperation.timestamp),
-    0
-  );
-
-  return {
-    ...operation,
-    // Client clocks and identity claims are untrusted. The server assigns both
-    // before the operation is allowed to influence conflict resolution.
-    operationId: `${socket.id}:${operation.operationId}`,
-    documentId,
-    userId: socket.data.user.userId,
-    timestamp: Math.max(Date.now(), latestTimestamp + 1),
-  };
 };
 
 const getHandshakeToken = (socket) => {
@@ -190,8 +139,15 @@ const collaborationSocket = (
   io,
   {
     canAccessDocument = hasDocumentAccess,
+
     blockLockDurationMs = DEFAULT_BLOCK_LOCK_DURATION_MS,
     persistence = null,
+
+    loadDocumentOperations: loadPersistedOperations = loadDocumentOperations,
+    saveDocumentOperation: savePersistedOperation = saveDocumentOperation,
+    loadYjsUpdates: loadPersistedYjsUpdates = loadYjsUpdates,
+    saveYjsUpdate: savePersistedYjsUpdate = saveYjsUpdate,
+
   } = {}
 ) => {
   // Locks live only in this process and expire automatically. The socket ID
@@ -239,6 +195,97 @@ const collaborationSocket = (
   };
 
   io.use(authenticateSocket);
+
+  const documentStates = new Map();
+  const crdtDocumentStates = new Map();
+  const yjsDocumentStates = new Map();
+  const documentLoads = new Map();
+  const yjsDocumentLoads = new Map();
+
+  const ensureDocumentState = (documentId) => {
+    if (!crdtDocumentStates.has(documentId)) {
+      crdtDocumentStates.set(documentId, createCRDTDocument());
+    }
+    const crdt = crdtDocumentStates.get(documentId);
+    const ast = crdtToAST(crdt);
+    documentStates.set(documentId, ast);
+    return { crdt, ast };
+  };
+
+  const loadDocumentState = async (documentId) => {
+    if (crdtDocumentStates.has(documentId)) {
+      return ensureDocumentState(documentId);
+    }
+    if (!documentLoads.has(documentId)) {
+      const load = (async () => {
+        const operations = await loadPersistedOperations(documentId);
+        const crdt = operations.reduce(
+          (state, operation) => applyCRDTOperation(state, operation),
+          createCRDTDocument()
+        );
+        crdtDocumentStates.set(documentId, crdt);
+        return ensureDocumentState(documentId);
+      })().finally(() => documentLoads.delete(documentId));
+      documentLoads.set(documentId, load);
+    }
+    return documentLoads.get(documentId);
+  };
+
+  const loadYjsDocumentState = async (documentId) => {
+    if (yjsDocumentStates.has(documentId)) {
+      return yjsDocumentStates.get(documentId);
+    }
+    if (!yjsDocumentLoads.has(documentId)) {
+      const load = (async () => {
+        const yjsDocument = createYjsDocument();
+        const updates = await loadPersistedYjsUpdates(documentId);
+        for (const update of updates) {
+          applyYjsUpdate(yjsDocument, new Uint8Array(update));
+        }
+        yjsDocumentStates.set(documentId, yjsDocument);
+        return yjsDocument;
+      })().finally(() => yjsDocumentLoads.delete(documentId));
+      yjsDocumentLoads.set(documentId, load);
+    }
+    return yjsDocumentLoads.get(documentId);
+  };
+
+  const applyDocumentOperation = (documentId, operation) => {
+    const { crdt } = ensureDocumentState(documentId);
+    if (crdt.operations[operation.operationId]) {
+      throw new Error("Duplicate operation received");
+    }
+    const updated = applyCRDTOperation(crdt, operation);
+    crdtDocumentStates.set(documentId, updated);
+    const ast = crdtToAST(updated);
+    documentStates.set(documentId, ast);
+    return { crdt: updated, ast };
+  };
+
+  const assertOperationIsNew = (documentId, operation) => {
+    const { crdt } = ensureDocumentState(documentId);
+    if (crdt.operations[operation.operationId]) {
+      throw new Error("Duplicate operation received");
+    }
+  };
+
+  const canonicalizeOperation = (socket, documentId, operation) => {
+    const { crdt } = ensureDocumentState(documentId);
+    const latestTimestamp = Object.values(crdt.operations).reduce(
+      (latest, existingOperation) => Math.max(latest, existingOperation.timestamp),
+      0
+    );
+    return {
+      ...operation,
+      // Scope client operation IDs to the authenticated actor. Unlike a socket
+      // ID this remains stable across reconnects and server restarts, making
+      // retries idempotent against both memory and MongoDB's unique index.
+      operationId: `${socket.data.user.userId}:${operation.operationId}`,
+      documentId,
+      userId: socket.data.user.userId,
+      timestamp: Math.max(Date.now(), latestTimestamp + 1),
+    };
+  };
 
   io.on("connection", (socket) => {
     console.log(
@@ -340,14 +387,15 @@ const collaborationSocket = (
 
           await requireDocumentAccess(documentId, "viewer");
 
+
           if (persistence) await restoreDocumentState(documentId);
 
-          socket.join(documentId);
-          const state = ensureDocumentState(documentId);
 
-          if (!yjsDocumentStates[documentId]) {
-            yjsDocumentStates[documentId] = createYjsDocument();
-          }
+          const state = await loadDocumentState(documentId);
+
+          socket.join(documentId);
+
+          const yjsDocument = await loadYjsDocumentState(documentId);
 
           console.log(`${socket.id} joined document room: ${documentId}`);
 
@@ -368,7 +416,7 @@ const collaborationSocket = (
 
           socket.emit("yjs-document-state", {
             documentId,
-            state: getYjsDocumentState(yjsDocumentStates[documentId]),
+            state: getYjsDocumentState(yjsDocument),
           });
 
           // Notify existing room members after the new member has received
@@ -399,6 +447,8 @@ const collaborationSocket = (
           validateOperation(socket, documentId, operation, "");
           await requireDocumentAccess(documentId, "editor");
           rejectLockedBlockEdit(documentId, operation);
+          await loadDocumentState(documentId);
+
           const canonicalOperation = canonicalizeOperation(
             socket,
             documentId,
@@ -406,6 +456,8 @@ const collaborationSocket = (
           );
 
           const previousCRDT = crdtDocumentStates[documentId];
+          assertOperationIsNew(documentId, canonicalOperation);
+          await savePersistedOperation(documentId, canonicalOperation);
 
           const { ast: updatedAST, crdt } = applyDocumentOperation(
             documentId,
@@ -485,18 +537,12 @@ const collaborationSocket = (
       "yjs-update",
       async ({ documentId, update } = {}) => {
         try {
-          // Validate document ID
-          if (!documentId) {
-            throw new Error(
-              "Document ID is required"
-            );
+          if (!isSafeIdentifier(documentId, MAX_DOCUMENT_ID_LENGTH)) {
+            throw new Error("A valid document ID is required");
           }
 
-          // Validate Yjs update
-          if (!update) {
-            throw new Error(
-              "Yjs update is required"
-            );
+          if (!socket.rooms.has(documentId)) {
+            throw new Error("Join the document before sending updates");
           }
 
           if (!isSafeIdentifier(documentId, MAX_DOCUMENT_ID_LENGTH)) {
@@ -512,11 +558,22 @@ const collaborationSocket = (
           if (!yjsDocumentStates[documentId]) {
             yjsDocumentStates[documentId] =
               createYjsDocument();
+
+          await requireDocumentAccess(documentId, "editor");
+
+          // Validate Yjs update
+          if (
+            !(Array.isArray(update) || update instanceof Uint8Array) ||
+            update.length === 0 ||
+            update.length > MAX_YJS_UPDATE_BYTES ||
+            Array.from(update).some(
+              (byte) => !Number.isInteger(byte) || byte < 0 || byte > 255
+            )
+          ) {
+            throw new Error(`Yjs update must contain 1 to ${MAX_YJS_UPDATE_BYTES} bytes`);
           }
 
-          // Convert incoming update to Uint8Array
-          const yjsUpdate =
-            new Uint8Array(update);
+          const yjsUpdate = new Uint8Array(update);
 
           const previousYjsUpdate = persistence && yjsDocumentStates[documentId]
             ? encodeYjsUpdate(yjsDocumentStates[documentId])
@@ -539,12 +596,27 @@ const collaborationSocket = (
             }
             throw error;
           }
+          // Reject malformed Yjs payloads before they enter the durable log.
+          const validationDocument = createYjsDocument();
+          try {
+            applyYjsUpdate(validationDocument, yjsUpdate);
+          } finally {
+            validationDocument.doc.destroy();
+          }
+
+          const yjsDocument = await loadYjsDocumentState(documentId);
+          await savePersistedYjsUpdate(
+            documentId,
+            socket.data.user.userId,
+            yjsUpdate
+          );
+
+          // Apply update to server-side Yjs document
+          applyYjsUpdate(yjsDocument, yjsUpdate);
 
           // Get updated state
           const updatedState =
-            getYjsDocumentState(
-              yjsDocumentStates[documentId]
-            );
+            getYjsDocumentState(yjsDocument);
 
           console.log(
             "Yjs update received for document:",
@@ -598,6 +670,7 @@ const collaborationSocket = (
           validateOperation(socket, documentId, operation, "CRDT");
           await requireDocumentAccess(documentId, "editor");
           rejectLockedBlockEdit(documentId, operation);
+          await loadDocumentState(documentId);
           const canonicalOperation = canonicalizeOperation(
             socket,
             documentId,
@@ -605,6 +678,8 @@ const collaborationSocket = (
           );
 
           const previousCRDT = crdtDocumentStates[documentId];
+          assertOperationIsNew(documentId, canonicalOperation);
+          await savePersistedOperation(documentId, canonicalOperation);
 
           const { ast: updatedAST, crdt: updatedCRDTDocument } =
             applyDocumentOperation(documentId, canonicalOperation);

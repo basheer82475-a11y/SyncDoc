@@ -11,6 +11,7 @@ const collaborationPersistence = require("./services/collaboration/persistence.s
 const documentRoutes = require("./routes/documentRoutes");
 const authRoutes = require("./routes/authRoutes");
 const sharingRoutes = require("./routes/sharingRoutes");
+const adminRoutes = require("./routes/adminRoutes");
 
 const app = express();
 
@@ -20,6 +21,7 @@ app.use(express.json());
 app.use("/api/documents", documentRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/sharing", sharingRoutes);
+app.use("/api/admin", adminRoutes);
 
 const server = http.createServer(app);
 
@@ -47,4 +49,8 @@ const startServer = async () => {
   });
 };
 
-startServer();
+if (require.main === module) {
+  startServer();
+}
+
+module.exports = { app, server, io, startServer };
