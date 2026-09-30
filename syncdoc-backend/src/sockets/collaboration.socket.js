@@ -197,6 +197,18 @@ const collaborationSocket = (
   // Locks live only in this process and expire automatically. The socket ID
   // distinguishes separate sessions belonging to the same authenticated user.
   const blockLocks = new Map();
+  const documentMutationQueues = new Map();
+  const documentRestorePromises = new Map();
+  const runDocumentMutation = (documentId, mutation) => {
+    const previous = documentMutationQueues.get(documentId) || Promise.resolve();
+    const current = previous.catch(() => {}).then(mutation);
+    documentMutationQueues.set(documentId, current);
+    return current.finally(() => {
+      if (documentMutationQueues.get(documentId) === current) {
+        documentMutationQueues.delete(documentId);
+      }
+    });
+  };
   const lockKey = (documentId, blockId) => `${documentId}\u0000${blockId}`;
   const getActiveLock = (documentId, blockId) => {
     const key = lockKey(documentId, blockId);
@@ -211,19 +223,34 @@ const collaborationSocket = (
 
   const restoreDocumentState = async (documentId) => {
     if (!persistence || crdtDocumentStates[documentId]) return;
-    const saved = await persistence.loadDocumentState(documentId);
-    if (saved?.crdt) {
-      crdtDocumentStates[documentId] = saved.crdt;
-      documentStates[documentId] = crdtToAST(saved.crdt);
-    } else {
-      ensureDocumentState(documentId);
+    let restore = documentRestorePromises.get(documentId);
+    if (!restore) {
+      restore = persistence.loadDocumentState(documentId).then((saved) => {
+        // Another request may have initialized this document while the load
+        // was in flight. Never replace state that has since become active.
+        if (!crdtDocumentStates[documentId]) {
+          if (saved?.crdt) {
+            crdtDocumentStates[documentId] = saved.crdt;
+            documentStates[documentId] = crdtToAST(saved.crdt);
+          } else {
+            ensureDocumentState(documentId);
+          }
+        }
+        if (!yjsDocumentStates[documentId]) {
+          yjsDocumentStates[documentId] = createYjsDocument();
+          if (saved?.yjsUpdate) {
+            applyYjsUpdate(yjsDocumentStates[documentId], saved.yjsUpdate);
+          }
+        }
+      });
+      documentRestorePromises.set(documentId, restore);
+      restore.finally(() => {
+        if (documentRestorePromises.get(documentId) === restore) {
+          documentRestorePromises.delete(documentId);
+        }
+      }).catch(() => {});
     }
-    if (!yjsDocumentStates[documentId]) {
-      yjsDocumentStates[documentId] = createYjsDocument();
-      if (saved?.yjsUpdate) {
-        applyYjsUpdate(yjsDocumentStates[documentId], saved.yjsUpdate);
-      }
-    }
+    await restore;
   };
 
   const saveDocumentState = async (documentId) => {
@@ -241,11 +268,6 @@ const collaborationSocket = (
   io.use(authenticateSocket);
 
   io.on("connection", (socket) => {
-    console.log(
-      "User connected:",
-      socket.id
-    );
-
     const requireDocumentAccess = async (documentId, permission) => {
       const isAllowed = await canAccessDocument({
         user: socket.data.user,
@@ -349,8 +371,6 @@ const collaborationSocket = (
             yjsDocumentStates[documentId] = createYjsDocument();
           }
 
-          console.log(`${socket.id} joined document room: ${documentId}`);
-
           // Send current states to the joining client.
           socket.emit("document-state", {
             documentId,
@@ -396,6 +416,7 @@ const collaborationSocket = (
       "edit-operation",
       async ({ documentId, operation } = {}) => {
         try {
+          await runDocumentMutation(documentId, async () => {
           validateOperation(socket, documentId, operation, "");
           await requireDocumentAccess(documentId, "editor");
           rejectLockedBlockEdit(documentId, operation);
@@ -419,16 +440,6 @@ const collaborationSocket = (
             documentStates[documentId] = crdtToAST(previousCRDT);
             throw error;
           }
-
-          console.log(
-            "Operation received:",
-            canonicalOperation
-          );
-
-          console.log(
-            "Total CRDT operations:",
-            Object.keys(crdt.operations).length
-          );
 
           // Broadcast to other users
           socket
@@ -460,8 +471,9 @@ const collaborationSocket = (
               operation: canonicalOperation,
               ast: updatedAST,
               crdt,
-            }
-          );
+              }
+            );
+          });
         } catch (error) {
           console.error(
             "Operation error:",
@@ -485,6 +497,7 @@ const collaborationSocket = (
       "yjs-update",
       async ({ documentId, update } = {}) => {
         try {
+          await runDocumentMutation(documentId, async () => {
           // Validate document ID
           if (!documentId) {
             throw new Error(
@@ -546,11 +559,6 @@ const collaborationSocket = (
               yjsDocumentStates[documentId]
             );
 
-          console.log(
-            "Yjs update received for document:",
-            documentId
-          );
-
           // Send update to other users
           socket
             .to(documentId)
@@ -569,8 +577,9 @@ const collaborationSocket = (
             {
               documentId,
               state: updatedState,
-            }
-          );
+              }
+            );
+          });
         } catch (error) {
           console.error(
             "Yjs update error:",
@@ -595,6 +604,7 @@ const collaborationSocket = (
       "crdt-operation",
       async ({ documentId, operation } = {}) => {
         try {
+          await runDocumentMutation(documentId, async () => {
           validateOperation(socket, documentId, operation, "CRDT");
           await requireDocumentAccess(documentId, "editor");
           rejectLockedBlockEdit(documentId, operation);
@@ -616,18 +626,6 @@ const collaborationSocket = (
             documentStates[documentId] = crdtToAST(previousCRDT);
             throw error;
           }
-
-          console.log(
-            "CRDT operation received:",
-            canonicalOperation
-          );
-
-          console.log(
-            "Total CRDT operations:",
-            Object.keys(
-              updatedCRDTDocument.operations
-            ).length
-          );
 
           // Send CRDT operation to other users
           socket
@@ -659,8 +657,9 @@ const collaborationSocket = (
               operation: canonicalOperation,
               ast: updatedAST,
               crdt: updatedCRDTDocument,
-            }
-          );
+              }
+            );
+          });
         } catch (error) {
           console.error(
             "CRDT operation error:",
@@ -686,9 +685,6 @@ const collaborationSocket = (
       (documentId) => {
         socket.leave(documentId);
 
-        console.log(
-          `${socket.id} left document room: ${documentId}`
-        );
       }
     );
 
@@ -709,10 +705,6 @@ const collaborationSocket = (
           }
 
         }
-        console.log(
-          "User disconnected:",
-          socket.id
-        );
       }
     );
   });
