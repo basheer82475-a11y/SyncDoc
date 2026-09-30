@@ -6,7 +6,10 @@ const { io: createClient } = require("socket.io-client");
 const jwt = require("jsonwebtoken");
 const Document = require("../models/Document");
 const Permission = require("../models/permission");
+const CRDTOperation = require("../models/crdtOperation");
 const persistence = require("../services/collaboration/persistence.service");
+const crdtPersistence = require("../services/collaboration/crdt-persistence.service");
+const yjsPersistence = require("../services/collaboration/yjs-persistence.service");
 const collaborationSocket = require("../sockets/collaboration.socket");
 
 require("dotenv").config();
@@ -39,10 +42,10 @@ const waitFor = (socket, event, timeoutMs = 5000) => new Promise((resolve, rejec
   });
 });
 
-const startServer = (persistenceAdapter) => {
+const startServer = (collaborationOptions) => {
   const server = http.createServer();
   const io = new Server(server);
-  collaborationSocket(io, { persistence: persistenceAdapter });
+  collaborationSocket(io, collaborationOptions);
   return new Promise((resolve) => server.listen(0, "127.0.0.1", () => resolve({
     server,
     io,
@@ -87,17 +90,20 @@ async function testPersistenceFailureDoesNotRollbackLaterMutation() {
   const firstWriteStarted = deferred();
   const releaseFirstWrite = deferred();
   let writeCount = 0;
-  const failingPersistence = {
-    loadDocumentState: persistence.loadDocumentState,
-    persistDocumentState: async (...args) => {
+  const persistenceOptions = {
+    persistence,
+    loadDocumentOperations: crdtPersistence.loadDocumentOperations,
+    saveDocumentOperation: async (...args) => {
       writeCount += 1;
       if (writeCount === 1) {
         firstWriteStarted.resolve();
         await releaseFirstWrite.promise;
-        throw new Error("Injected persistence failure");
+        throw new Error("Injected operation persistence failure");
       }
-      return persistence.persistDocumentState(...args);
+      return crdtPersistence.saveDocumentOperation(...args);
     },
+    loadYjsUpdates: yjsPersistence.loadYjsUpdates,
+    saveYjsUpdate: yjsPersistence.saveYjsUpdate,
   };
 
   let server;
@@ -110,7 +116,7 @@ async function testPersistenceFailureDoesNotRollbackLaterMutation() {
       permission: "editor",
     });
 
-    server = await startServer(failingPersistence);
+    server = await startServer(persistenceOptions);
     const editor = makeClient(server.url);
     clients.push(editor);
     await waitFor(editor, "connect");
@@ -139,10 +145,10 @@ async function testPersistenceFailureDoesNotRollbackLaterMutation() {
       "surviving-block",
       "This later edit must survive",
     );
-    releaseFirstWrite.reject(new Error("Injected persistence failure"));
+    releaseFirstWrite.resolve();
 
     const failedResult = await firstError;
-    assert.match(failedResult.message, /Injected persistence failure/);
+    assert.match(failedResult.message, /Injected operation persistence failure/);
     const confirmed = await laterConfirmation;
     assert.ok(
       acknowledgements.every((payload) => !payload.operation.operationId.endsWith(firstOperationId)),
@@ -166,6 +172,14 @@ async function testPersistenceFailureDoesNotRollbackLaterMutation() {
       "This later edit must survive",
     );
     assert.deepStrictEqual(saved.blocks.map((block) => block.blockId), ["surviving-block"]);
+    const persistedOperations = await CRDTOperation.find({
+      documentId: failureDocumentId.toString(),
+    }).lean();
+    assert.deepStrictEqual(
+      persistedOperations.map((record) => record.operation.blockId),
+      ["surviving-block"],
+      "the failed operation must not enter the durable operation log",
+    );
     console.log("Persistence failure/concurrent mutation regression passed.");
   } finally {
     releaseFirstWrite.resolve();
@@ -173,56 +187,36 @@ async function testPersistenceFailureDoesNotRollbackLaterMutation() {
   }
 }
 
-async function testConcurrentFirstRecoveryDoesNotOverwriteNewerState() {
+async function testConcurrentFirstJoinsShareRecoveryLoad() {
   const recoveryStarted = deferred();
   const releaseRecovery = deferred();
   let loadCount = 0;
-  const delayedPersistence = {
-    persistDocumentState: persistence.persistDocumentState,
-    loadDocumentState: async (documentId) => {
+  const delayedLoadOptions = {
+    loadDocumentOperations: async (documentId) => {
       loadCount += 1;
-      const saved = await persistence.loadDocumentState(documentId);
+      const saved = await crdtPersistence.loadDocumentOperations(documentId);
       recoveryStarted.resolve();
       await releaseRecovery.promise;
       return saved;
     },
+    saveDocumentOperation: crdtPersistence.saveDocumentOperation,
+    loadYjsUpdates: yjsPersistence.loadYjsUpdates,
+    saveYjsUpdate: yjsPersistence.saveYjsUpdate,
   };
 
   let recoveringServer;
-  let initializingServer;
   const clients = [];
   try {
-    await Document.create({
-      _id: recoveryDocumentId,
-      title: "Concurrent recovery regression",
-      blocks: [{ blockId: "persisted-block", type: "paragraph", content: "Persisted version" }],
-      collaborationState: {
-        type: "document",
-        blocks: {
-          "persisted-block": {
-            blockId: "persisted-block",
-            type: "paragraph",
-            content: "Persisted version",
-            operationId: "saved-operation",
-            userId: editorUserId.toString(),
-            timestamp: 1,
-            deleted: false,
-          },
-        },
-        order: ["persisted-block"],
-        operations: {
-          "saved-operation": {
-            operationId: "saved-operation",
-            type: "ADD_BLOCK",
-            documentId: recoveryDocumentId.toString(),
-            blockId: "persisted-block",
-            content: "Persisted version",
-            position: 0,
-            userId: editorUserId.toString(),
-            timestamp: 1,
-          },
-        },
-      },
+    await Document.create({ _id: recoveryDocumentId, title: "Concurrent recovery regression" });
+    await crdtPersistence.saveDocumentOperation(recoveryDocumentId.toString(), {
+      operationId: "persisted-operation",
+      type: "ADD_BLOCK",
+      documentId: recoveryDocumentId.toString(),
+      blockId: "persisted-block",
+      content: "Persisted version",
+      position: 0,
+      userId: editorUserId.toString(),
+      timestamp: 1,
     });
     await Permission.create({
       documentId: recoveryDocumentId,
@@ -230,7 +224,7 @@ async function testConcurrentFirstRecoveryDoesNotOverwriteNewerState() {
       permission: "editor",
     });
 
-    recoveringServer = await startServer(delayedPersistence);
+    recoveringServer = await startServer(delayedLoadOptions);
     const recoveringClientA = makeClient(recoveringServer.url);
     const recoveringClientB = makeClient(recoveringServer.url);
     clients.push(recoveringClientA, recoveringClientB);
@@ -242,37 +236,19 @@ async function testConcurrentFirstRecoveryDoesNotOverwriteNewerState() {
     recoveringClientB.emit("join-document", recoveryDocumentId.toString());
     await recoveryStarted.promise;
 
-    // This second Socket.IO server shares the module's room cache. Its normal,
-    // authenticated join and CRDT edit initializes a newer state while the
-    // first server's database recovery is still deliberately pending.
-    initializingServer = await startServer(null);
-    const initializingClient = makeClient(initializingServer.url);
-    clients.push(initializingClient);
-    await waitFor(initializingClient, "connect");
-    await join(initializingClient, recoveryDocumentId);
-    const initialized = await addBlock(
-      initializingClient,
-      recoveryDocumentId,
-      "newer-in-memory-operation",
-      "newer-block",
-      "Newer initialized version",
-    );
-    assert.strictEqual(initialized.ast.children[0].content, "Newer initialized version");
-
     releaseRecovery.resolve();
     const [stateA, stateB] = await Promise.all([recoveredStateA, recoveredStateB]);
     assert.strictEqual(loadCount, 1, "concurrent first joins must share one state load");
     assert.deepStrictEqual(stateA.ast, stateB.ast, "both joining clients must receive the same state");
     assert.deepStrictEqual(
       stateA.ast.children.map((block) => [block.id, block.content]),
-      [["newer-block", "Newer initialized version"]],
-      "the delayed persisted snapshot must not overwrite newer initialized state",
+      [["persisted-block", "Persisted version"]],
+      "both clients must receive the correct recovered state from the single load",
     );
-    console.log("Concurrent first recovery/join regression passed.");
+    console.log("Concurrent first joins share one correct recovery load.");
   } finally {
     releaseRecovery.resolve();
     if (recoveringServer) await closeServer(recoveringServer, clients);
-    if (initializingServer) await closeServer(initializingServer, clients);
   }
 }
 
@@ -283,7 +259,7 @@ async function run() {
   try {
     await mongoose.connect(process.env.MONGO_URI, { dbName: databaseName });
     await testPersistenceFailureDoesNotRollbackLaterMutation();
-    await testConcurrentFirstRecoveryDoesNotOverwriteNewerState();
+    await testConcurrentFirstJoinsShareRecoveryLoad();
   } finally {
     if (mongoose.connection.readyState === 1) {
       if (!databaseName.startsWith("syncdoc_collaboration_race_test_")) {

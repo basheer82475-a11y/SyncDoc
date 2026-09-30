@@ -31,7 +31,18 @@ const close = (server, io, sockets) =>
 const run = async () => {
   const server = http.createServer();
   const io = new Server(server, { cors: { origin: "*" } });
-  collaborationSocket(io, { canAccessDocument: async () => true });
+  const savedOperations = new Map();
+  collaborationSocket(io, {
+    canAccessDocument: async () => true,
+    loadDocumentOperations: async (documentId) => savedOperations.get(documentId) || [],
+    saveDocumentOperation: async (documentId, operation) => {
+      const operations = savedOperations.get(documentId) || [];
+      operations.push(operation);
+      savedOperations.set(documentId, operations);
+    },
+    loadYjsUpdates: async () => [],
+    saveYjsUpdate: async () => {},
+  });
 
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address();

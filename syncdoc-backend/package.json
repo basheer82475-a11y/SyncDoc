@@ -7,7 +7,9 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "test:collaboration": "node src/tests/collaboration-socket-crdt.test.js && node src/tests/collaboration-socket-security.test.js && node src/tests/collaboration-locking.test.js && node src/tests/collaboration-stress.test.js",
-    "test:persistence": "node src/tests/collaboration-persistence.test.js"
+    "test:persistence": "node src/tests/collaboration-persistence.test.js",
+    "test:integration": "node src/tests/login-socket-integration.test.js",
+    "test:persistence-failure": "node src/tests/collaboration-persistence-failure.test.js"
   },
   "keywords": [],
   "author": "",
@@ -16,8 +18,10 @@
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
+    "dompurify": "^3.4.16",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "jsdom": "^30.1.1",
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.10.1",
     "socket.io": "^4.8.3",

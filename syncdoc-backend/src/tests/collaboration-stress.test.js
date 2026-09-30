@@ -19,11 +19,20 @@ const close = (server, io, clients) => new Promise((resolve) => {
 async function run() {
   const server = http.createServer();
   const io = new Server(server);
+  const operations = new Map();
   // Socket permissions are isolated test grants; JWT verification and identity
   // extraction still run through the production authentication middleware.
   collaborationSocket(io, {
     canAccessDocument: async ({ user, permission }) =>
       user.userId.startsWith("stress-user-") && ["viewer", "editor"].includes(permission),
+    loadDocumentOperations: async (documentId) => operations.get(documentId) || [],
+    saveDocumentOperation: async (documentId, operation) => {
+      const current = operations.get(documentId) || [];
+      current.push(operation);
+      operations.set(documentId, current);
+    },
+    loadYjsUpdates: async () => [],
+    saveYjsUpdate: async () => {},
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const url = `http://127.0.0.1:${server.address().port}`;
