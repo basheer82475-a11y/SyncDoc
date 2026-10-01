@@ -24,13 +24,6 @@ const applyOperation = (
     operation
   )
 ) {
-  console.log(
-    "Conflict detected:",
-    previousOperation.operationId,
-    "vs",
-    operation.operationId
-  );
-
   addConflict(operation.documentId, {
     operationA: previousOperation.operationId,
     operationB: operation.operationId,

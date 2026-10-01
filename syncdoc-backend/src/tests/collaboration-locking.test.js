@@ -21,10 +21,19 @@ const close = (server, io, clients) => new Promise((resolve) => {
 async function run() {
   const server = http.createServer();
   const io = new Server(server);
+  const operations = new Map();
   collaborationSocket(io, {
     blockLockDurationMs: 120,
     canAccessDocument: async ({ user, permission }) =>
       user.userId !== "denied" && (permission === "viewer" || user.userId !== "viewer"),
+    loadDocumentOperations: async (documentId) => operations.get(documentId) || [],
+    saveDocumentOperation: async (documentId, operation) => {
+      const current = operations.get(documentId) || [];
+      current.push(operation);
+      operations.set(documentId, current);
+    },
+    loadYjsUpdates: async () => [],
+    saveYjsUpdate: async () => {},
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const url = `http://127.0.0.1:${server.address().port}`;
