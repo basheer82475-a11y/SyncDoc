@@ -6,10 +6,13 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
+
     "test:collaboration": "node src/tests/collaboration-socket-crdt.test.js && node src/tests/collaboration-socket-security.test.js && node src/tests/collaboration-locking.test.js && node src/tests/collaboration-stress.test.js",
     "test:persistence": "node src/tests/collaboration-persistence.test.js",
+
     "test:integration": "node src/tests/login-socket-integration.test.js",
     "test:persistence-failure": "node src/tests/collaboration-persistence-failure.test.js"
+
   },
   "keywords": [],
   "author": "",
