@@ -9,13 +9,15 @@ const loadDocumentOperations = async (documentId) => {
   return records.map(({ operation }) => operation);
 };
 
-const saveDocumentOperation = async (documentId, operation) => {
+const saveDocumentOperation = async (documentId, operation, conflicts = []) => {
   try {
-    await CRDTOperation.create({
+    const record = {
       documentId,
       operationId: operation.operationId,
       operation,
-    });
+    };
+    if (conflicts.length > 0) record.conflicts = conflicts;
+    await CRDTOperation.create(record);
   } catch (error) {
     if (error.code === 11000) {
       throw new Error("Duplicate operation received");
@@ -24,4 +26,12 @@ const saveDocumentOperation = async (documentId, operation) => {
   }
 };
 
-module.exports = { loadDocumentOperations, saveDocumentOperation };
+const deleteDocumentOperation = async (documentId, operationId) => {
+  await CRDTOperation.deleteOne({ documentId, operationId });
+};
+
+module.exports = {
+  loadDocumentOperations,
+  saveDocumentOperation,
+  deleteDocumentOperation,
+};

@@ -6,6 +6,7 @@ const { Server } = require("socket.io");
 const { io: createClient } = require("socket.io-client");
 const jwt = require("jsonwebtoken");
 const Document = require("../models/Document");
+const CRDTOperation = require("../models/crdtOperation");
 const Permission = require("../models/permission");
 const persistence = require("../services/collaboration/persistence.service");
 
@@ -69,6 +70,30 @@ async function run() {
     } });
     await confirmation;
 
+    const firstUpdate = waitFor(firstClient, "crdt-operation-confirmed");
+    firstClient.emit("crdt-operation", { documentId: documentId.toString(), operation: {
+      operationId: "persisted-first-update",
+      type: "UPDATE_BLOCK",
+      blockId: "persisted-block",
+      content: "Intermediate update",
+    } });
+    await firstUpdate;
+
+    const conflictingUpdate = waitFor(firstClient, "crdt-operation-confirmed");
+    firstClient.emit("crdt-operation", { documentId: documentId.toString(), operation: {
+      operationId: "persisted-conflicting-update",
+      type: "UPDATE_BLOCK",
+      blockId: "persisted-block",
+      content: "Stored in MongoDB",
+    } });
+    const conflictConfirmation = await conflictingUpdate;
+    assert.strictEqual(conflictConfirmation.conflicts.length, 1);
+    const persistedConflictOperation = await CRDTOperation.findOne({
+      documentId: documentId.toString(),
+      operationId: conflictConfirmation.operation.operationId,
+    }).lean();
+    assert.deepStrictEqual(persistedConflictOperation.conflicts, conflictConfirmation.conflicts);
+
     const ydoc = new Y.Doc();
     ydoc.getMap("blocks").set("yjs-block", {
       blockId: "yjs-block", type: "paragraph", content: "Yjs survived restart",
@@ -113,6 +138,15 @@ async function run() {
     assert.strictEqual(crdtState.ast.children[0].content, "Stored in MongoDB");
     assert.ok(crdtState.crdt.operations);
     assert.strictEqual(yjsState.state.blocks["yjs-block"].content, "Yjs survived restart");
+    const recoveredConflictOperation = await CRDTOperation.findOne({
+      documentId: documentId.toString(),
+      operationId: conflictConfirmation.operation.operationId,
+    }).lean();
+    assert.deepStrictEqual(
+      recoveredConflictOperation.conflicts,
+      conflictConfirmation.conflicts,
+      "conflict metadata must remain available after a fresh socket process recovers the document",
+    );
 
     console.log(`Persistence and recovery passed using isolated database ${databaseName}.`);
   } finally {
