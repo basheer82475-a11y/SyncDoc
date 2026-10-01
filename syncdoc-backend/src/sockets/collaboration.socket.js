@@ -16,7 +16,12 @@ const {
   getYjsDocumentState,
   encodeYjsUpdate,
 } = require("../services/collaboration/yjs.service");
-const { loadDocumentOperations, saveDocumentOperation } = require("../services/collaboration/crdt-persistence.service");
+const {
+  loadDocumentOperations,
+  saveDocumentOperation,
+  deleteDocumentOperation,
+} = require("../services/collaboration/crdt-persistence.service");
+const { isConflictingOperation } = require("../services/collaboration/conflict.service");
 const { loadYjsUpdates, saveYjsUpdate } = require("../services/collaboration/yjs-persistence.service");
 
 const SUPPORTED_OPERATION_TYPES = new Set([
@@ -145,6 +150,7 @@ const collaborationSocket = (
 
     loadDocumentOperations: loadPersistedOperations = loadDocumentOperations,
     saveDocumentOperation: savePersistedOperation = saveDocumentOperation,
+    deleteDocumentOperation: deletePersistedOperation = deleteDocumentOperation,
     loadYjsUpdates: loadPersistedYjsUpdates = loadYjsUpdates,
     saveYjsUpdate: savePersistedYjsUpdate = saveYjsUpdate,
 
@@ -670,16 +676,56 @@ const collaborationSocket = (
 
           const previousCRDT = crdtDocumentStates.get(documentId);
           assertOperationIsNew(documentId, canonicalOperation);
-          await savePersistedOperation(documentId, canonicalOperation);
+          const existingOperations = Object.values(previousCRDT.operations);
+          const conflictPairs = [];
+          const seenConflictPairs = new Set();
+          for (const existingOperation of existingOperations) {
+            const pairKey = `${existingOperation.operationId}\u0000${canonicalOperation.operationId}`;
+            if (
+              seenConflictPairs.has(pairKey) ||
+              !isConflictingOperation(existingOperation, canonicalOperation)
+            ) {
+              continue;
+            }
+            seenConflictPairs.add(pairKey);
+            conflictPairs.push(existingOperation);
+          }
 
           const { ast: updatedAST, crdt: updatedCRDTDocument } =
             applyDocumentOperation(documentId, canonicalOperation);
+
+          const winnerOperationId =
+            updatedCRDTDocument.blocks[canonicalOperation.blockId]?.operationId;
+          const detectedAt = Date.now();
+          const conflicts = conflictPairs.map((existingOperation) => ({
+            documentId,
+            operationA: existingOperation.operationId,
+            operationB: canonicalOperation.operationId,
+            blockId: canonicalOperation.blockId,
+            typeA: existingOperation.type,
+            typeB: canonicalOperation.type,
+            detectedAt,
+            winnerOperationId: winnerOperationId || null,
+          }));
+
+          try {
+            await savePersistedOperation(documentId, canonicalOperation, conflicts);
+          } catch (error) {
+            crdtDocumentStates.set(documentId, previousCRDT);
+            documentStates.set(documentId, crdtToAST(previousCRDT));
+            throw error;
+          }
 
           try {
             await saveDocumentState(documentId);
           } catch (error) {
             crdtDocumentStates.set(documentId, previousCRDT);
             documentStates.set(documentId, crdtToAST(previousCRDT));
+            try {
+              await deletePersistedOperation(documentId, canonicalOperation.operationId);
+            } catch (cleanupError) {
+              error.operationCleanupError = cleanupError;
+            }
             throw error;
           }
 
@@ -693,6 +739,7 @@ const collaborationSocket = (
                 operation: canonicalOperation,
                 ast: updatedAST,
                 crdt: updatedCRDTDocument,
+                conflicts,
               }
             );
 
@@ -703,6 +750,7 @@ const collaborationSocket = (
             operation: canonicalOperation,
             ast: updatedAST,
             crdt: updatedCRDTDocument,
+            conflicts,
           });
 
           // Confirm CRDT operation to sender
@@ -713,6 +761,7 @@ const collaborationSocket = (
               operation: canonicalOperation,
               ast: updatedAST,
               crdt: updatedCRDTDocument,
+              conflicts,
               }
             );
           });

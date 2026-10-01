@@ -5,6 +5,10 @@ const crdtOperationSchema = new mongoose.Schema(
     documentId: { type: String, required: true },
     operationId: { type: String, required: true },
     operation: { type: mongoose.Schema.Types.Mixed, required: true },
+    conflicts: {
+      type: [mongoose.Schema.Types.Mixed],
+      default: undefined,
+    },
   },
   { timestamps: true }
 );
