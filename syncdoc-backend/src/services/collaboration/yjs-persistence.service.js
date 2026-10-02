@@ -12,7 +12,16 @@ const loadYjsUpdates = async (documentId) => {
 };
 
 const saveYjsUpdate = async (documentId, userId, update) => {
-  await YjsUpdate.create({ documentId, userId, update: Buffer.from(update) });
+  const record = await YjsUpdate.create({
+    documentId,
+    userId,
+    update: Buffer.from(update),
+  });
+  return record._id.toString();
 };
 
-module.exports = { loadYjsUpdates, saveYjsUpdate };
+const deleteYjsUpdate = async (documentId, updateId) => {
+  await YjsUpdate.deleteOne({ _id: updateId, documentId });
+};
+
+module.exports = { loadYjsUpdates, saveYjsUpdate, deleteYjsUpdate };

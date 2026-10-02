@@ -162,6 +162,9 @@ async function run() {
       2,
       "all prior conflicting updates should be recorded exactly once",
     );
+    assert.ok(thirdUpdate.conflicts.every((conflict) =>
+      conflict.winnerOperationId === thirdUpdate.crdt.blocks["shared-block"].operationId,
+    ), "every conflict winner should match the resolved CRDT block operation");
 
     const deletion = await send(clientB, documentId, {
       operationId: "delete-shared",
@@ -171,6 +174,9 @@ async function run() {
     assert.ok(deletion.conflicts.length >= 1);
     assert.ok(deletion.conflicts.every((conflict) =>
       conflict.typeA === "UPDATE_BLOCK" && conflict.typeB === "DELETE_BLOCK",
+    ));
+    assert.ok(deletion.conflicts.every((conflict) =>
+      conflict.winnerOperationId === deletion.crdt.blocks["shared-block"].operationId,
     ));
     assert.strictEqual(
       deletion.crdt.blocks["shared-block"].operationId,
@@ -211,6 +217,55 @@ async function run() {
       content: "separate document updated",
     });
     assert.deepStrictEqual(secondDocumentUpdate.conflicts, []);
+
+    const orphanUpdate = await send(clientA, documentId, {
+      operationId: "orphan-update",
+      type: "UPDATE_BLOCK",
+      blockId: "missing-conflict-block",
+      content: "update on missing block",
+    });
+    assert.strictEqual(orphanUpdate.crdt.blocks["missing-conflict-block"], undefined);
+    const orphanDelete = await send(clientB, documentId, {
+      operationId: "orphan-delete",
+      type: "DELETE_BLOCK",
+      blockId: "missing-conflict-block",
+    });
+    assert.strictEqual(orphanDelete.crdt.blocks["missing-conflict-block"], undefined);
+    assert.strictEqual(orphanDelete.conflicts.length, 1);
+    assert.strictEqual(orphanDelete.conflicts[0].operationA, orphanUpdate.operation.operationId);
+    assert.strictEqual(orphanDelete.conflicts[0].operationB, orphanDelete.operation.operationId);
+    assert.strictEqual(
+      orphanDelete.conflicts[0].winnerOperationId,
+      orphanDelete.operation.operationId,
+      "missing-block conflicts should use timestamp + operation ID ordering without fabricating a block",
+    );
+    assert.ok(orphanDelete.conflicts.every((conflict) =>
+      typeof conflict.winnerOperationId === "string" && conflict.winnerOperationId.length > 0,
+    ));
+    const orphanRecord = records.get(documentId).find(
+      (record) => record.operation.operationId === orphanDelete.operation.operationId,
+    );
+    assert.deepStrictEqual(orphanRecord.conflicts, orphanDelete.conflicts);
+
+    const orphanDeleteFirst = await send(clientA, documentId, {
+      operationId: "orphan-delete-first",
+      type: "DELETE_BLOCK",
+      blockId: "another-missing-block",
+    });
+    const orphanUpdateSecond = await send(clientB, documentId, {
+      operationId: "orphan-update-second",
+      type: "UPDATE_BLOCK",
+      blockId: "another-missing-block",
+      content: "update after delete on missing block",
+    });
+    assert.strictEqual(orphanUpdateSecond.crdt.blocks["another-missing-block"], undefined);
+    assert.strictEqual(orphanUpdateSecond.conflicts.length, 1);
+    assert.strictEqual(
+      orphanUpdateSecond.conflicts[0].winnerOperationId,
+      orphanUpdateSecond.operation.operationId,
+      "the incoming later update should win by the existing deterministic order",
+    );
+    assert.ok(orphanUpdateSecond.conflicts.every((conflict) => conflict.winnerOperationId));
 
     const conflictShape = {
       documentId,

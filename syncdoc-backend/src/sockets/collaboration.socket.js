@@ -1,6 +1,7 @@
 const {
   createCRDTDocument,
   applyCRDTOperation,
+  compareCRDTOperations,
   crdtToAST,
 } = require("../services/collaboration/crdt.service");
 const jwt = require("jsonwebtoken");
@@ -22,7 +23,11 @@ const {
   deleteDocumentOperation,
 } = require("../services/collaboration/crdt-persistence.service");
 const { isConflictingOperation } = require("../services/collaboration/conflict.service");
-const { loadYjsUpdates, saveYjsUpdate } = require("../services/collaboration/yjs-persistence.service");
+const {
+  loadYjsUpdates,
+  saveYjsUpdate,
+  deleteYjsUpdate,
+} = require("../services/collaboration/yjs-persistence.service");
 
 const SUPPORTED_OPERATION_TYPES = new Set([
   "ADD_BLOCK",
@@ -153,6 +158,7 @@ const collaborationSocket = (
     deleteDocumentOperation: deletePersistedOperation = deleteDocumentOperation,
     loadYjsUpdates: loadPersistedYjsUpdates = loadYjsUpdates,
     saveYjsUpdate: savePersistedYjsUpdate = saveYjsUpdate,
+    deleteYjsUpdate: deletePersistedYjsUpdate = deleteYjsUpdate,
 
   } = {}
 ) => {
@@ -505,6 +511,11 @@ const collaborationSocket = (
           } catch (error) {
             crdtDocumentStates.set(documentId, previousCRDT);
             documentStates.set(documentId, crdtToAST(previousCRDT));
+            try {
+              await deletePersistedOperation(documentId, canonicalOperation.operationId);
+            } catch (cleanupError) {
+              error.operationCleanupError = cleanupError;
+            }
             throw error;
           }
 
@@ -597,7 +608,7 @@ const collaborationSocket = (
           const previousYjsUpdate = persistence
             ? encodeYjsUpdate(yjsDocument)
             : null;
-          await savePersistedYjsUpdate(
+          const persistedYjsUpdateId = await savePersistedYjsUpdate(
             documentId,
             socket.data.user.userId,
             yjsUpdate
@@ -611,6 +622,13 @@ const collaborationSocket = (
             if (previousYjsUpdate) applyYjsUpdate(restored, previousYjsUpdate);
             yjsDocument.doc.destroy();
             yjsDocumentStates.set(documentId, restored);
+            try {
+              if (persistedYjsUpdateId) {
+                await deletePersistedYjsUpdate(documentId, persistedYjsUpdateId);
+              }
+            } catch (cleanupError) {
+              error.updateCleanupError = cleanupError;
+            }
             throw error;
           }
 
@@ -694,19 +712,30 @@ const collaborationSocket = (
           const { ast: updatedAST, crdt: updatedCRDTDocument } =
             applyDocumentOperation(documentId, canonicalOperation);
 
-          const winnerOperationId =
+          const resolvedBlockOperationId =
             updatedCRDTDocument.blocks[canonicalOperation.blockId]?.operationId;
           const detectedAt = Date.now();
-          const conflicts = conflictPairs.map((existingOperation) => ({
-            documentId,
-            operationA: existingOperation.operationId,
-            operationB: canonicalOperation.operationId,
-            blockId: canonicalOperation.blockId,
-            typeA: existingOperation.type,
-            typeB: canonicalOperation.type,
-            detectedAt,
-            winnerOperationId: winnerOperationId || null,
-          }));
+          const conflicts = conflictPairs.map((existingOperation) => {
+            // When the block exists, record the operation that the CRDT state
+            // actually selected. For conflicts on a missing block neither
+            // operation materializes a block, so use the same deterministic
+            // timestamp + operationId ordering to identify the pair winner.
+            const winnerOperationId = resolvedBlockOperationId || (
+              compareCRDTOperations(existingOperation, canonicalOperation) < 0
+                ? canonicalOperation.operationId
+                : existingOperation.operationId
+            );
+            return {
+              documentId,
+              operationA: existingOperation.operationId,
+              operationB: canonicalOperation.operationId,
+              blockId: canonicalOperation.blockId,
+              typeA: existingOperation.type,
+              typeB: canonicalOperation.type,
+              detectedAt,
+              winnerOperationId,
+            };
+          });
 
           try {
             await savePersistedOperation(documentId, canonicalOperation, conflicts);
