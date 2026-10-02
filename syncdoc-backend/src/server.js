@@ -12,6 +12,7 @@ const documentRoutes = require("./routes/documentRoutes");
 const authRoutes = require("./routes/authRoutes");
 const sharingRoutes = require("./routes/sharingRoutes");
 const adminRoutes = require("./routes/adminRoutes");
+const transformationRoutes = require("./routes/transformationRoutes");
 
 const app = express();
 
@@ -22,6 +23,7 @@ app.use("/api/documents", documentRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/sharing", sharingRoutes);
 app.use("/api/admin", adminRoutes);
+app.use("/api/transform", transformationRoutes);
 
 const server = http.createServer(app);
 
