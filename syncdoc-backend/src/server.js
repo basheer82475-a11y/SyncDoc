@@ -7,6 +7,7 @@ const { Server } = require("socket.io");
 
 const connectDB = require("./config/db");
 const collaborationSocket = require("./sockets/collaboration.socket");
+const collaborationPersistence = require("./services/collaboration/persistence.service");
 const documentRoutes = require("./routes/documentRoutes");
 const authRoutes = require("./routes/authRoutes");
 const sharingRoutes = require("./routes/sharingRoutes");
@@ -35,7 +36,7 @@ app.get("/", (req, res) => {
 });
 
 // Initialize collaboration socket
-collaborationSocket(io);
+collaborationSocket(io, { persistence: collaborationPersistence });
 
 const PORT = process.env.PORT || 5000;
 

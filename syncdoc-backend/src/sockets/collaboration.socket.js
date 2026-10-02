@@ -14,8 +14,14 @@ const {
   createYjsDocument,
   applyYjsUpdate,
   getYjsDocumentState,
+  encodeYjsUpdate,
 } = require("../services/collaboration/yjs.service");
-const { loadDocumentOperations, saveDocumentOperation } = require("../services/collaboration/crdt-persistence.service");
+const {
+  loadDocumentOperations,
+  saveDocumentOperation,
+  deleteDocumentOperation,
+} = require("../services/collaboration/crdt-persistence.service");
+const { isConflictingOperation } = require("../services/collaboration/conflict.service");
 const { loadYjsUpdates, saveYjsUpdate } = require("../services/collaboration/yjs-persistence.service");
 
 const SUPPORTED_OPERATION_TYPES = new Set([
@@ -28,7 +34,11 @@ const MAX_DOCUMENT_ID_LENGTH = 200;
 const MAX_BLOCK_ID_LENGTH = 200;
 const MAX_OPERATION_ID_LENGTH = 200;
 const MAX_CONTENT_LENGTH = 100_000;
+
+const DEFAULT_BLOCK_LOCK_DURATION_MS = 60_000;
+
 const MAX_YJS_UPDATE_BYTES = 1_000_000;
+
 
 const isSafeIdentifier = (value, maxLength) =>
   typeof value === "string" &&
@@ -134,12 +144,98 @@ const collaborationSocket = (
   io,
   {
     canAccessDocument = hasDocumentAccess,
+
+    blockLockDurationMs = DEFAULT_BLOCK_LOCK_DURATION_MS,
+    persistence = null,
+
     loadDocumentOperations: loadPersistedOperations = loadDocumentOperations,
     saveDocumentOperation: savePersistedOperation = saveDocumentOperation,
+    deleteDocumentOperation: deletePersistedOperation = deleteDocumentOperation,
     loadYjsUpdates: loadPersistedYjsUpdates = loadYjsUpdates,
     saveYjsUpdate: savePersistedYjsUpdate = saveYjsUpdate,
+
   } = {}
 ) => {
+  // Locks live only in this process and expire automatically. The socket ID
+  // distinguishes separate sessions belonging to the same authenticated user.
+  const blockLocks = new Map();
+  const documentMutationQueues = new Map();
+  const documentRestorePromises = new Map();
+  const runDocumentMutation = (documentId, mutation) => {
+    const previous = documentMutationQueues.get(documentId) || Promise.resolve();
+    const current = previous.catch(() => {}).then(mutation);
+    documentMutationQueues.set(documentId, current);
+    return current.finally(() => {
+      if (documentMutationQueues.get(documentId) === current) {
+        documentMutationQueues.delete(documentId);
+      }
+    });
+  };
+  const lockKey = (documentId, blockId) => `${documentId}\u0000${blockId}`;
+  const getActiveLock = (documentId, blockId) => {
+    const key = lockKey(documentId, blockId);
+    const lock = blockLocks.get(key);
+    if (lock && lock.expiresAt <= Date.now()) {
+      blockLocks.delete(key);
+      io.to(documentId).emit("block-unlocked", { documentId, blockId, reason: "expired" });
+      return null;
+    }
+    return lock;
+  };
+
+  const restoreDocumentState = async (documentId) => {
+    if (!persistence || crdtDocumentStates.has(documentId)) return;
+    let restore = documentRestorePromises.get(documentId);
+    if (!restore) {
+      restore = (async () => {
+        const saved = await persistence.loadDocumentState(documentId);
+        const operations = await loadPersistedOperations(documentId);
+        let crdt = saved?.crdt || createCRDTDocument();
+        for (const operation of operations) {
+          crdt = applyCRDTOperation(crdt, operation);
+        }
+        if (!crdtDocumentStates.has(documentId)) {
+          crdtDocumentStates.set(documentId, crdt);
+          documentStates.set(documentId, crdtToAST(crdt));
+        }
+
+        const yjsDocument = createYjsDocument();
+        if (saved?.yjsUpdate) {
+          applyYjsUpdate(yjsDocument, saved.yjsUpdate);
+        }
+        const updates = await loadPersistedYjsUpdates(documentId);
+        for (const update of updates) {
+          applyYjsUpdate(yjsDocument, new Uint8Array(update));
+        }
+        if (!yjsDocumentStates.has(documentId)) {
+          yjsDocumentStates.set(documentId, yjsDocument);
+        } else {
+          yjsDocument.doc.destroy();
+        }
+      })();
+      documentRestorePromises.set(documentId, restore);
+      restore.finally(() => {
+        if (documentRestorePromises.get(documentId) === restore) {
+          documentRestorePromises.delete(documentId);
+        }
+      }).catch(() => {});
+    }
+    await restore;
+  };
+
+  const saveDocumentState = async (documentId) => {
+    if (!persistence) return;
+    const yjsDocument = yjsDocumentStates.get(documentId);
+    const yjsUpdate = yjsDocument
+      ? encodeYjsUpdate(yjsDocument)
+      : undefined;
+    await persistence.persistDocumentState(
+      documentId,
+      crdtDocumentStates.get(documentId) || createCRDTDocument(),
+      yjsUpdate
+    );
+  };
+
   io.use(authenticateSocket);
 
   const documentStates = new Map();
@@ -234,11 +330,6 @@ const collaborationSocket = (
   };
 
   io.on("connection", (socket) => {
-    console.log(
-      "User connected:",
-      socket.id
-    );
-
     const requireDocumentAccess = async (documentId, permission) => {
       const isAllowed = await canAccessDocument({
         user: socket.data.user,
@@ -248,6 +339,74 @@ const collaborationSocket = (
 
       if (!isAllowed) {
         throw new Error("You do not have access to this document");
+      }
+    };
+
+    const validateLockTarget = (documentId, blockId) => {
+      if (!isSafeIdentifier(documentId, MAX_DOCUMENT_ID_LENGTH)) {
+        throw new Error("A valid document ID is required");
+      }
+      if (!isSafeIdentifier(blockId, MAX_BLOCK_ID_LENGTH)) {
+        throw new Error("A valid block ID is required");
+      }
+      if (!socket.rooms.has(documentId)) {
+        throw new Error("Join the document before locking blocks");
+      }
+    };
+
+    socket.on("lock-block", async ({ documentId, blockId } = {}) => {
+      try {
+        validateLockTarget(documentId, blockId);
+        await requireDocumentAccess(documentId, "editor");
+        const existing = getActiveLock(documentId, blockId);
+        if (existing && existing.socketId !== socket.id) {
+          throw new Error("Block is already locked by another user");
+        }
+        const lock = {
+          documentId,
+          blockId,
+          userId: socket.data.user.userId,
+          socketId: socket.id,
+          expiresAt: Date.now() + blockLockDurationMs,
+        };
+        blockLocks.set(lockKey(documentId, blockId), lock);
+        io.to(documentId).emit("block-locked", {
+          documentId, blockId, userId: lock.userId, expiresAt: lock.expiresAt,
+        });
+      } catch (error) {
+        socket.emit("block-lock-error", { message: error.message });
+      }
+    });
+
+    socket.on("unlock-block", async ({ documentId, blockId } = {}) => {
+      try {
+        validateLockTarget(documentId, blockId);
+        await requireDocumentAccess(documentId, "editor");
+        const key = lockKey(documentId, blockId);
+        const lock = getActiveLock(documentId, blockId);
+        if (!lock) throw new Error("Block is not locked");
+        if (lock.socketId !== socket.id) {
+          throw new Error("Only the lock owner can unlock this block");
+        }
+        blockLocks.delete(key);
+        io.to(documentId).emit("block-unlocked", { documentId, blockId, userId: lock.userId });
+      } catch (error) {
+        socket.emit("block-lock-error", { message: error.message });
+      }
+    });
+
+    const rejectLockedBlockEdit = (documentId, operation) => {
+      const lock = getActiveLock(documentId, operation.blockId);
+      if (lock && lock.socketId !== socket.id) {
+        throw new Error("Block is locked by another user");
+      }
+    };
+
+    const rejectYjsUpdateWhileLocked = (documentId) => {
+      for (const lock of blockLocks.values()) {
+        if (lock.documentId === documentId && getActiveLock(documentId, lock.blockId)) {
+          throw new Error("Yjs updates are paused while a document block is locked");
+        }
       }
     };
 
@@ -265,12 +424,15 @@ const collaborationSocket = (
 
           await requireDocumentAccess(documentId, "viewer");
 
+
+          if (persistence) await restoreDocumentState(documentId);
+
+
           const state = await loadDocumentState(documentId);
+
           socket.join(documentId);
 
           const yjsDocument = await loadYjsDocumentState(documentId);
-
-          console.log(`${socket.id} joined document room: ${documentId}`);
 
           // Send current states to the joining client.
           socket.emit("document-state", {
@@ -317,15 +479,19 @@ const collaborationSocket = (
       "edit-operation",
       async ({ documentId, operation } = {}) => {
         try {
+          await runDocumentMutation(documentId, async () => {
           validateOperation(socket, documentId, operation, "");
           await requireDocumentAccess(documentId, "editor");
+          rejectLockedBlockEdit(documentId, operation);
           await loadDocumentState(documentId);
+
           const canonicalOperation = canonicalizeOperation(
             socket,
             documentId,
             operation
           );
 
+          const previousCRDT = crdtDocumentStates.get(documentId);
           assertOperationIsNew(documentId, canonicalOperation);
           await savePersistedOperation(documentId, canonicalOperation);
 
@@ -334,15 +500,13 @@ const collaborationSocket = (
             canonicalOperation
           );
 
-          console.log(
-            "Operation received:",
-            canonicalOperation
-          );
-
-          console.log(
-            "Total CRDT operations:",
-            Object.keys(crdt.operations).length
-          );
+          try {
+            await saveDocumentState(documentId);
+          } catch (error) {
+            crdtDocumentStates.set(documentId, previousCRDT);
+            documentStates.set(documentId, crdtToAST(previousCRDT));
+            throw error;
+          }
 
           // Broadcast to other users
           socket
@@ -374,8 +538,9 @@ const collaborationSocket = (
               operation: canonicalOperation,
               ast: updatedAST,
               crdt,
-            }
-          );
+              }
+            );
+          });
         } catch (error) {
           console.error(
             "Operation error:",
@@ -399,17 +564,15 @@ const collaborationSocket = (
       "yjs-update",
       async ({ documentId, update } = {}) => {
         try {
+          await runDocumentMutation(documentId, async () => {
           if (!isSafeIdentifier(documentId, MAX_DOCUMENT_ID_LENGTH)) {
             throw new Error("A valid document ID is required");
           }
-
           if (!socket.rooms.has(documentId)) {
             throw new Error("Join the document before sending updates");
           }
-
           await requireDocumentAccess(documentId, "editor");
-
-          // Validate Yjs update
+          rejectYjsUpdateWhileLocked(documentId);
           if (
             !(Array.isArray(update) || update instanceof Uint8Array) ||
             update.length === 0 ||
@@ -422,8 +585,7 @@ const collaborationSocket = (
           }
 
           const yjsUpdate = new Uint8Array(update);
-
-          // Reject malformed Yjs payloads before they enter the durable log.
+          // Reject malformed updates before they enter the durable log.
           const validationDocument = createYjsDocument();
           try {
             applyYjsUpdate(validationDocument, yjsUpdate);
@@ -432,23 +594,29 @@ const collaborationSocket = (
           }
 
           const yjsDocument = await loadYjsDocumentState(documentId);
+          const previousYjsUpdate = persistence
+            ? encodeYjsUpdate(yjsDocument)
+            : null;
           await savePersistedYjsUpdate(
             documentId,
             socket.data.user.userId,
             yjsUpdate
           );
-
-          // Apply update to server-side Yjs document
           applyYjsUpdate(yjsDocument, yjsUpdate);
+
+          try {
+            await saveDocumentState(documentId);
+          } catch (error) {
+            const restored = createYjsDocument();
+            if (previousYjsUpdate) applyYjsUpdate(restored, previousYjsUpdate);
+            yjsDocument.doc.destroy();
+            yjsDocumentStates.set(documentId, restored);
+            throw error;
+          }
 
           // Get updated state
           const updatedState =
             getYjsDocumentState(yjsDocument);
-
-          console.log(
-            "Yjs update received for document:",
-            documentId
-          );
 
           // Send update to other users
           socket
@@ -470,6 +638,7 @@ const collaborationSocket = (
               state: updatedState,
             }
           );
+          });
         } catch (error) {
           console.error(
             "Yjs update error:",
@@ -494,8 +663,10 @@ const collaborationSocket = (
       "crdt-operation",
       async ({ documentId, operation } = {}) => {
         try {
+          await runDocumentMutation(documentId, async () => {
           validateOperation(socket, documentId, operation, "CRDT");
           await requireDocumentAccess(documentId, "editor");
+          rejectLockedBlockEdit(documentId, operation);
           await loadDocumentState(documentId);
           const canonicalOperation = canonicalizeOperation(
             socket,
@@ -503,23 +674,60 @@ const collaborationSocket = (
             operation
           );
 
+          const previousCRDT = crdtDocumentStates.get(documentId);
           assertOperationIsNew(documentId, canonicalOperation);
-          await savePersistedOperation(documentId, canonicalOperation);
+          const existingOperations = Object.values(previousCRDT.operations);
+          const conflictPairs = [];
+          const seenConflictPairs = new Set();
+          for (const existingOperation of existingOperations) {
+            const pairKey = `${existingOperation.operationId}\u0000${canonicalOperation.operationId}`;
+            if (
+              seenConflictPairs.has(pairKey) ||
+              !isConflictingOperation(existingOperation, canonicalOperation)
+            ) {
+              continue;
+            }
+            seenConflictPairs.add(pairKey);
+            conflictPairs.push(existingOperation);
+          }
 
           const { ast: updatedAST, crdt: updatedCRDTDocument } =
             applyDocumentOperation(documentId, canonicalOperation);
 
-          console.log(
-            "CRDT operation received:",
-            canonicalOperation
-          );
+          const winnerOperationId =
+            updatedCRDTDocument.blocks[canonicalOperation.blockId]?.operationId;
+          const detectedAt = Date.now();
+          const conflicts = conflictPairs.map((existingOperation) => ({
+            documentId,
+            operationA: existingOperation.operationId,
+            operationB: canonicalOperation.operationId,
+            blockId: canonicalOperation.blockId,
+            typeA: existingOperation.type,
+            typeB: canonicalOperation.type,
+            detectedAt,
+            winnerOperationId: winnerOperationId || null,
+          }));
 
-          console.log(
-            "Total CRDT operations:",
-            Object.keys(
-              updatedCRDTDocument.operations
-            ).length
-          );
+          try {
+            await savePersistedOperation(documentId, canonicalOperation, conflicts);
+          } catch (error) {
+            crdtDocumentStates.set(documentId, previousCRDT);
+            documentStates.set(documentId, crdtToAST(previousCRDT));
+            throw error;
+          }
+
+          try {
+            await saveDocumentState(documentId);
+          } catch (error) {
+            crdtDocumentStates.set(documentId, previousCRDT);
+            documentStates.set(documentId, crdtToAST(previousCRDT));
+            try {
+              await deletePersistedOperation(documentId, canonicalOperation.operationId);
+            } catch (cleanupError) {
+              error.operationCleanupError = cleanupError;
+            }
+            throw error;
+          }
 
           // Send CRDT operation to other users
           socket
@@ -531,6 +739,7 @@ const collaborationSocket = (
                 operation: canonicalOperation,
                 ast: updatedAST,
                 crdt: updatedCRDTDocument,
+                conflicts,
               }
             );
 
@@ -541,6 +750,7 @@ const collaborationSocket = (
             operation: canonicalOperation,
             ast: updatedAST,
             crdt: updatedCRDTDocument,
+            conflicts,
           });
 
           // Confirm CRDT operation to sender
@@ -551,8 +761,10 @@ const collaborationSocket = (
               operation: canonicalOperation,
               ast: updatedAST,
               crdt: updatedCRDTDocument,
-            }
-          );
+              conflicts,
+              }
+            );
+          });
         } catch (error) {
           console.error(
             "CRDT operation error:",
@@ -578,9 +790,6 @@ const collaborationSocket = (
       (documentId) => {
         socket.leave(documentId);
 
-        console.log(
-          `${socket.id} left document room: ${documentId}`
-        );
       }
     );
 
@@ -591,10 +800,16 @@ const collaborationSocket = (
     socket.on(
       "disconnect",
       () => {
-        console.log(
-          "User disconnected:",
-          socket.id
-        );
+        for (const [key, lock] of blockLocks) {
+          if (lock.socketId === socket.id) {
+            blockLocks.delete(key);
+            io.to(lock.documentId).emit("block-unlocked", {
+              documentId: lock.documentId, blockId: lock.blockId,
+              userId: lock.userId, reason: "disconnected",
+            });
+          }
+
+        }
       }
     );
   });
