@@ -1,4 +1,4 @@
-import type { Document } from '../App'
+import type { Document } from '../api'
 
 type SidebarProps = {
   documents: Document[]

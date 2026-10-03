@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import "./landing.css";
+import { io, type Socket } from "socket.io-client";
 import {
   createDocument as createDocumentRequest,
   deleteDocument as deleteDocumentRequest,
@@ -76,12 +76,23 @@ function App() {
 
   const [history, setHistory] = useState<string[]>([]);
   const [future, setFuture] = useState<string[]>([]);
+  const [livePresence, setLivePresence] = useState<Record<string, {
+    id: string;
+    name: string;
+    documentId: string;
+    line: number;
+    at: number;
+  }>>({
+    "demo-rya": { id: "demo-rya", name: "Riya Shah", documentId: "demo-welcome", line: 3, at: Date.now() },
+    "demo-dev": { id: "demo-dev", name: "Dev Nair", documentId: "demo-planning", line: 6, at: Date.now() },
+  });
+  const [activeLineLock, setActiveLineLock] = useState<{ user: string; line: number } | null>(null);
 
   const editorRef = useRef<HTMLTextAreaElement>(null);
   const findInputRef = useRef<HTMLInputElement>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const socketRef = useRef<WebSocket | null>(null);
+  const socketRef = useRef<Socket | null>(null);
   const cancelDeleteRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -99,6 +110,54 @@ function App() {
   );
   const editorText = activeDocument?.content || "";
   const editorWordCount = editorText.trim() ? editorText.trim().split(/\s+/).length : 0;
+  const liveCollaborators = Object.values(livePresence)
+    .filter((entry) => entry.documentId === activeId && entry.id !== user?.id)
+    .sort((left, right) => left.line - right.line);
+  const liveCollaboratorNames = new Set(liveCollaborators.map((entry) => entry.name));
+
+  const getCursorLine = (content: string, cursorPosition: number) => {
+    const beforeCursor = content.slice(0, Math.max(0, cursorPosition));
+    return beforeCursor.split(/\r?\n/).length;
+  };
+
+  const updateCurrentUserPresence = (cursorPosition: number) => {
+    if (!activeId || !user) return;
+    const lineNumber = getCursorLine(activeDocument?.content || "", cursorPosition);
+    const payload = {
+      id: user.id,
+      name: user.name,
+      documentId: activeId,
+      line: Math.max(1, lineNumber),
+      at: Date.now(),
+    };
+    setLivePresence((current) => ({
+      ...current,
+      [user.id]: payload,
+    }));
+    setActiveLineLock({ user: user.name, line: payload.line });
+  };
+
+  useEffect(() => {
+    if (!user) return;
+    const cleanup = window.setInterval(() => {
+      setLivePresence((current) => {
+        const next = { ...current };
+        Object.entries(next).forEach(([key, entry]) => {
+          if (entry.id !== user.id && Date.now() - entry.at > 12000) {
+            delete next[key];
+          }
+        });
+        return next;
+      });
+    }, 1500);
+    return () => window.clearInterval(cleanup);
+  }, [user]);
+
+  useEffect(() => {
+    if (!activeLineLock) return;
+    const timeout = window.setTimeout(() => setActiveLineLock(null), 1800);
+    return () => window.clearTimeout(timeout);
+  }, [activeLineLock]);
 
   const findNextInDocument = () => {
     const editor = editorRef.current;
@@ -262,18 +321,39 @@ function App() {
       return;
     }
     getCollaborators(activeId).then(setCollaborators).catch(() => setCollaborators([]));
-    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    const socket = new WebSocket(`${protocol}://${window.location.host}/ws?documentId=${activeId}`);
+
+    const socket = io(window.location.origin, {
+      path: "/ws",
+      transports: ["websocket"],
+      auth: {
+        token: getToken() || undefined,
+      },
+      query: { documentId: activeId },
+    });
+
     socketRef.current = socket;
-    socket.onopen = () => setConnected(true);
-    socket.onclose = () => setConnected(false);
-    socket.onmessage = (event) => {
-      const message = JSON.parse(event.data) as { type: string; document?: Document; actorId?: string };
-      if (message.type === "document-updated" && message.document && message.actorId !== user.id) {
-        setDocuments((current) => current.map((document) => document.id === message.document!.id ? message.document! : document));
-      }
+    socket.on("connect", () => setConnected(true));
+    socket.on("disconnect", () => setConnected(false));
+    socket.on("connect_error", () => setConnected(false));
+    socket.on("document-state", (message: { documentId: string; ast?: unknown }) => {
+      if (message.documentId !== activeId) return;
+      setConnected(true);
+    });
+    socket.on("operation-applied", (message: { documentId: string; ast?: unknown; operation?: unknown }) => {
+      if (message.documentId !== activeId || !message.ast) return;
+      setConnected(true);
+    });
+
+    socket.emit("join-document", activeId);
+
+    return () => {
+      socket.off("connect");
+      socket.off("disconnect");
+      socket.off("connect_error");
+      socket.off("document-state");
+      socket.off("operation-applied");
+      socket.close();
     };
-    return () => socket.close();
   }, [activeId, user, demoMode]);
 
   useEffect(() => () => {
@@ -720,65 +800,381 @@ function App() {
 
   if (!user) {
     return (
-      <div className="auth-screen">
-        <section className="auth-story" aria-label="About SyncDoc">
-          <div className="story-brand">
-            <div className="logo auth-logo">S</div>
-            <span>SyncDoc</span>
-            <span className="story-brand-note">Collaborative documents</span>
+      <>
+        <style>{`
+          * { box-sizing: border-box; }
+          html, body, #root { margin: 0; min-height: 100%; }
+          body { font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f7fb; color: #172033; }
+          button, input { font: inherit; }
+          .auth-screen {
+            min-height: 100vh;
+            display: grid;
+            grid-template-columns: 1.15fr 0.85fr;
+            background: linear-gradient(180deg, #f5fff8 0%, #f7f8fc 100%);
+          }
+          .auth-story {
+            padding: 56px 56px 40px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 24px;
+            background: radial-gradient(circle at top left, rgba(34,197,94,0.08), transparent 30%), #f5fff8;
+          }
+          .story-brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-weight: 700;
+            color: #1f2a37;
+          }
+          .auth-logo {
+            width: 42px;
+            height: 42px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, #16a34a, #4ade80);
+            color: white;
+            font-weight: 800;
+            box-shadow: 0 12px 28px rgba(22, 163, 74, 0.18);
+          }
+          .story-brand-note {
+            color: #6b7280;
+            font-size: 13px;
+            font-weight: 500;
+            margin-left: 4px;
+          }
+          .story-intro { max-width: 560px; }
+          .eyebrow {
+            color: #15803d;
+            font-size: 12px;
+            letter-spacing: 0.12em;
+            font-weight: 800;
+            margin: 0 0 12px;
+          }
+          .story-intro h2 {
+            margin: 0;
+            font-size: clamp(36px, 4vw, 58px);
+            line-height: 1.05;
+            letter-spacing: -0.05em;
+            color: #111827;
+          }
+          .story-intro p {
+            margin-top: 16px;
+            font-size: 18px;
+            line-height: 1.7;
+            color: #4b5563;
+            max-width: 520px;
+          }
+          .story-preview {
+            width: min(100%, 520px);
+            background: rgba(255, 255, 255, 0.96);
+            border: 1px solid rgba(148, 163, 184, 0.2);
+            border-radius: 22px;
+            box-shadow: 0 20px 45px rgba(15, 23, 42, 0.06);
+            overflow: hidden;
+          }
+          .preview-topline {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 18px 22px 10px;
+            font-size: 14px;
+            color: #374151;
+          }
+          .preview-file-icon {
+            width: 26px;
+            height: 26px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 8px;
+            background: #eef2ff;
+            color: #4338ca;
+            font-weight: 800;
+          }
+          .preview-file-name { flex: 1; font-weight: 700; }
+          .preview-live {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            color: #0f766e;
+            font-size: 12px;
+            font-weight: 700;
+          }
+          .preview-live i {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #22c55e;
+            box-shadow: 0 0 0 5px rgba(34,197,94,0.12);
+          }
+          .preview-content {
+            padding: 8px 22px 20px;
+          }
+          .preview-kicker {
+            color: #64748b;
+            display: block;
+            font-size: 11px;
+            letter-spacing: 0.12em;
+            margin-bottom: 12px;
+          }
+          .preview-heading {
+            font-size: 28px;
+            font-weight: 700;
+            line-height: 1.2;
+            color: #111827;
+            margin-bottom: 16px;
+          }
+          .preview-line {
+            height: 10px;
+            border-radius: 999px;
+            background: #e5e7eb;
+            margin-bottom: 10px;
+          }
+          .preview-line-long { width: 90%; }
+          .preview-line-mid { width: 72%; }
+          .preview-highlight {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: #eef7ff;
+            color: #0f172a;
+            border-radius: 12px;
+            padding: 10px 12px;
+            width: fit-content;
+            font-size: 14px;
+            margin-top: 16px;
+          }
+          .preview-highlight span {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #3b82f6;
+            display: inline-block;
+          }
+          .preview-bottomline {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 0 22px 22px;
+            color: #475569;
+            font-size: 13px;
+          }
+          .preview-avatars {
+            display: flex;
+            align-items: center;
+          }
+          .preview-avatars span {
+            width: 26px;
+            height: 26px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            border: 2px solid white;
+            background: #dbeafe;
+            color: #1d4ed8;
+            font-size: 9px;
+            font-weight: 800;
+            margin-left: -6px;
+          }
+          .preview-avatars span:first-child { margin-left: 0; }
+          .story-footnote {
+            color: #475569;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+          }
+          .auth-panel {
+            background: rgba(255, 255, 255, 0.96);
+            border-left: 1px solid rgba(148, 163, 184, 0.25);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            padding: 52px 48px;
+            box-shadow: inset 0 0 0 1px rgba(21,128,61,0.03);
+          }
+          .auth-panel h1 {
+            margin: 0 0 8px;
+            font-size: clamp(30px, 2.5vw, 44px);
+            color: #111827;
+            letter-spacing: -0.04em;
+          }
+          .auth-copy {
+            margin: 0 0 24px;
+            color: #64748b;
+            font-size: 15px;
+          }
+          .auth-form {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+          }
+          .auth-form input {
+            border-radius: 12px;
+            border: 1px solid #dfe5ee;
+            background: white;
+            padding: 14px 16px;
+            font-size: 15px;
+            outline: none;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease;
+            color: #1f2937;
+          }
+          .auth-form input:focus {
+            border-color: #5b4bdb;
+            box-shadow: 0 0 0 4px rgba(91, 75, 219, 0.1);
+          }
+          .primary-action {
+            margin-top: 6px;
+            border: none;
+            background: linear-gradient(135deg, #16a34a, #4ade80);
+            color: white;
+            padding: 14px 18px;
+            border-radius: 12px;
+            font-weight: 700;
+            font-size: 15px;
+            cursor: pointer;
+            box-shadow: 0 12px 24px rgba(34,197,94,0.18);
+          }
+          .primary-action:hover {
+            background: linear-gradient(135deg, #15803d, #22c55e);
+          }
+          .demo-access-card {
+            margin-top: 18px;
+            border: 1px solid rgba(34,197,94,0.15);
+            background: rgba(34,197,94,0.04);
+            border-radius: 14px;
+            padding: 16px;
+          }
+          .demo-access-heading {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            margin-bottom: 10px;
+          }
+          .demo-access-heading span {
+            font-size: 11px;
+            letter-spacing: 0.12em;
+            color: #15803d;
+            font-weight: 800;
+          }
+          .demo-access-heading small {
+            color: #64748b;
+            font-size: 12px;
+          }
+          .demo-access-options button {
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 4px;
+            background: white;
+            border: 1px solid rgba(91, 75, 219, 0.12);
+            border-radius: 12px;
+            padding: 12px 14px;
+            cursor: pointer;
+            color: #1f2937;
+          }
+          .demo-access-options strong {
+            font-size: 14px;
+          }
+          .demo-access-options span, .demo-access-options small {
+            color: #64748b;
+            font-size: 12px;
+          }
+          .auth-error {
+            margin-top: 14px;
+            color: #b91c1c;
+            font-size: 13px;
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+            padding: 10px 12px;
+            border-radius: 10px;
+          }
+          .text-action {
+            margin-top: 18px;
+            background: transparent;
+            color: #15803d;
+            font-weight: 600;
+            cursor: pointer;
+          }
+          .demo-hint {
+            margin-top: 14px;
+            color: #64748b;
+            font-size: 12px;
+          }
+          @media (max-width: 900px) {
+            .auth-screen { grid-template-columns: 1fr; }
+            .auth-story { padding: 28px 22px 18px; }
+            .auth-panel { padding: 24px 22px 32px; }
+          }
+        `}</style>
+        <div className="auth-screen">
+          <section className="auth-story" aria-label="About SyncDoc">
+            <div className="story-brand">
+              <div className="logo auth-logo">S</div>
+              <span>SyncDoc</span>
+              <span className="story-brand-note">Collaborative documents</span>
+            </div>
+
+            <div className="story-intro">
+              <p className="eyebrow">DOCUMENTS, MADE TOGETHER</p>
+              <h2>Write together.<br />Stay in sync.</h2>
+              <p>Write clearly, keep everyone in sync, and turn a blank page into work you’re proud to share.</p>
+            </div>
+
+            <div className="story-preview" aria-label="Preview of a shared project document">
+              <div className="preview-topline">
+                <span className="preview-file-icon">S</span>
+                <span className="preview-file-name">Project brief</span>
+                <span className="preview-live"><i /> Demo document</span>
+              </div>
+              <div className="preview-content">
+                <span className="preview-kicker">MONDAY, 9:41 AM</span>
+                <div className="preview-heading">A clear direction<br />starts with a draft.</div>
+                <div className="preview-line preview-line-long" />
+                <div className="preview-line preview-line-mid" />
+                <div className="preview-highlight"><span /> One shared page. Everyone in sync.</div>
+              </div>
+              <div className="preview-bottomline">
+                <div className="preview-avatars"><span>AM</span><span>JL</span><span>RK</span></div>
+                <span>3 people · editing together</span>
+              </div>
+            </div>
+
+            <p className="story-footnote"><span>✳</span> Your ideas, always in good company.</p>
+          </section>
+
+          <div className="auth-panel">
+            <p className="eyebrow">{authMode === "login" ? "YOUR WORKSPACE AWAITS" : "START SOMETHING GOOD"}</p>
+            <h1>{authMode === "login" ? "Welcome back" : "Create your workspace"}</h1>
+            <p className="auth-copy">{authMode === "login" ? "Pick up right where your ideas left off." : "A calm, collaborative place for the work ahead."}</p>
+            <form onSubmit={submitAuth} className="auth-form">
+              {authMode === "register" && <input value={authName} onChange={(event) => setAuthName(event.target.value)} placeholder="Full name" aria-label="Full name" required />}
+              <input value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} type="email" placeholder="Email address" aria-label="Email address" required />
+              <input value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} type="password" placeholder="Password (6+ characters)" aria-label="Password" minLength={6} required />
+              <button className="primary-action" type="submit">{authMode === "login" ? "Log in" : "Create account"}</button>
+            </form>
+            {authMode === "login" && <div className="demo-access-card">
+              <div className="demo-access-heading"><span>TRY THE USER DEMO</span></div>
+              <div className="demo-access-options">
+                <button type="button" onClick={() => { setAuthEmail("writer@syncdoc.app"); setAuthPassword("Writer@123"); setError(null); }}><strong>User workspace</strong><span>writer@syncdoc.app</span><small>Writer@123</small></button>
+              </div>
+            </div>}
+            {error && <p className="auth-error" role="alert">{error}</p>}
+            <button className="text-action" onClick={() => { setAuthMode(authMode === "login" ? "register" : "login"); setError(null); }}>
+              {authMode === "login" ? "New to SyncDoc? Create an account" : "Already have an account? Log in"}
+            </button>
+            <p className="demo-hint">Demo changes stay in this browser.</p>
           </div>
-
-          <div className="story-intro">
-            <p className="eyebrow">DOCUMENTS, MADE TOGETHER</p>
-            <h2>Write together.<br />Stay in sync.</h2>
-            <p>Write clearly, keep everyone in sync, and turn a blank page into work you’re proud to share.</p>
-          </div>
-
-          <div className="story-preview" aria-label="Preview of a shared project document">
-            <div className="preview-topline">
-              <span className="preview-file-icon">S</span>
-              <span className="preview-file-name">Project brief</span>
-              <span className="preview-live"><i /> Demo document</span>
-            </div>
-            <div className="preview-content">
-              <span className="preview-kicker">MONDAY, 9:41 AM</span>
-              <div className="preview-heading">A clear direction<br />starts with a draft.</div>
-              <div className="preview-line preview-line-long" />
-              <div className="preview-line preview-line-mid" />
-              <div className="preview-highlight"><span /> One shared page. Everyone in sync.</div>
-            </div>
-            <div className="preview-bottomline">
-              <div className="preview-avatars"><span>AM</span><span>JL</span><span>RK</span></div>
-              <span>3 people · editing together</span>
-            </div>
-          </div>
-
-          <p className="story-footnote"><span>✳</span> Your ideas, always in good company.</p>
-        </section>
-
-        <div className="auth-panel">
-          <p className="eyebrow">{authMode === "login" ? "YOUR WORKSPACE AWAITS" : "START SOMETHING GOOD"}</p>
-          <h1>{authMode === "login" ? "Welcome back" : "Create your workspace"}</h1>
-          <p className="auth-copy">{authMode === "login" ? "Pick up right where your ideas left off." : "A calm, collaborative place for the work ahead."}</p>
-          <form onSubmit={submitAuth} className="auth-form">
-            {authMode === "register" && <input value={authName} onChange={(event) => setAuthName(event.target.value)} placeholder="Full name" aria-label="Full name" required />}
-            <input value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} type="email" placeholder="Email address" aria-label="Email address" required />
-            <input value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} type="password" placeholder="Password (6+ characters)" aria-label="Password" minLength={6} required />
-            <button className="primary-action" type="submit">{authMode === "login" ? "Log in" : "Create account"}</button>
-          </form>
-          {authMode === "login" && <div className="demo-access-card">
-            <div className="demo-access-heading"><span>TRY THE USER DEMO</span><small>Works without a backend</small></div>
-            <div className="demo-access-options">
-              <button type="button" onClick={() => { setAuthEmail("writer@syncdoc.app"); setAuthPassword("Writer@123"); setError(null); }}><strong>User workspace</strong><span>writer@syncdoc.app</span><small>Writer@123</small></button>
-            </div>
-          </div>}
-          {error && <p className="auth-error" role="alert">{error}</p>}
-          <button className="text-action" onClick={() => { setAuthMode(authMode === "login" ? "register" : "login"); setError(null); }}>
-            {authMode === "login" ? "New to SyncDoc? Create an account" : "Already have an account? Log in"}
-          </button>
-          <p className="demo-hint">Demo changes stay in this browser.</p>
         </div>
-      </div>
+      </>
     );
   }
 
@@ -904,7 +1300,10 @@ function App() {
         .share-panel select { border: 1px solid #e1e5ed; border-radius: 7px; padding: 8px; background: white; color: #526075; }
         .share-button { padding: 8px 12px; border-radius: 7px; background: #635bda; color: white; cursor: pointer; font-weight: 650; }
         .collaborator-list { display: flex; gap: 5px; align-items: center; color: #9299a8; font-size: 11px; }
-        .collaborator-chip { padding: 4px 7px; background: #efedff; color: #635bda; border-radius: 10px; }
+        .collaborator-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 7px; background: #efedff; color: #635bda; border-radius: 10px; }
+        .collaborator-chip-name { display: inline-flex; align-items: center; }
+        .collaborator-live { background: rgba(34,197,94,0.1); color: #166534; border: 1px solid rgba(34,197,94,0.2); }
+        .collaborator-live-dot { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; display: inline-block; box-shadow: 0 0 0 3px rgba(34,197,94,0.14); }
         .auth-screen { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: radial-gradient(circle at 15% 10%, #eeecff, transparent 35%), #f6f7fb; }
         .auth-panel { width: min(430px, 100%); padding: 42px; border: 1px solid #e4e7ef; border-radius: 18px; background: white; box-shadow: 0 22px 55px rgba(35, 40, 70, .1); }
         .auth-logo { margin-bottom: 28px; }
@@ -1327,6 +1726,8 @@ function App() {
         .editor-footer { background: #fffdf8; border-color: var(--line); color: #858679; }
         .editor-count { color: #969487; }
         .collaborator-chip { background: var(--champagne); color: var(--ink); }
+        .collaborator-live { background: rgba(34,197,94,0.12); color: #166534; border: 1px solid rgba(34,197,94,0.2); }
+        .collaborator-live-dot { width: 7px; height: 7px; border-radius: 50%; background: #22c55e; display: inline-block; box-shadow: 0 0 0 3px rgba(34,197,94,0.12); }
         .collaborator-list { flex-wrap: wrap; justify-content: flex-end; max-width: min(58vw, 680px); }
         .collaborator-chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 5px 4px 8px; }
         .collaborator-chip button { display: grid; width: 18px; height: 18px; place-items: center; padding: 0; border: 0; border-radius: 50%; background: transparent; color: inherit; cursor: pointer; font-size: 15px; line-height: 1; }
@@ -1595,6 +1996,42 @@ function App() {
         .story-preview { border-radius: 12px; box-shadow: 0 10px 26px rgba(41,50,38,.07); transform: none; }
         .preview-highlight { border-radius: 6px; }
         .app-toast { border-radius: 8px; box-shadow: 0 8px 22px rgba(6,78,59,.14); }
+        .live-presence-panel {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 10px;
+          margin: 0 0 16px;
+        }
+        .live-presence-card {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          border: 1px solid rgba(44, 125, 94, 0.2);
+          background: rgba(36, 177, 126, 0.08);
+          color: #0c5d49;
+          padding: 7px 12px;
+          border-radius: 999px;
+          font-size: 12px;
+          font-weight: 600;
+        }
+        .live-presence-dot {
+          display: inline-block;
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          background: #1fb977;
+          box-shadow: 0 0 0 4px rgba(31, 185, 119, 0.15);
+        }
+        .live-lock-banner {
+          margin: 0 0 14px;
+          padding: 10px 12px;
+          border: 1px solid rgba(83, 101, 179, 0.18);
+          background: rgba(91, 75, 219, 0.08);
+          color: #362e82;
+          border-radius: 10px;
+          font-size: 12px;
+          font-weight: 700;
+        }
         @media (max-width: 700px) {
           .home-dashboard, .admin-dashboard { padding: 20px 15px; }
           .home-welcome { min-height: 190px; }
@@ -1949,6 +2386,23 @@ function App() {
               <button className="share-button" onClick={handleShare}>Share</button>
             </div>}
 
+            {liveCollaborators.length > 0 && (
+              <div className="live-presence-panel" aria-live="polite">
+                {liveCollaborators.map((collaborator) => (
+                  <div className="live-presence-card" key={collaborator.id}>
+                    <span className="live-presence-dot" />
+                    <span>{collaborator.name} is editing line {collaborator.line}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {activeLineLock && (
+              <div className="live-lock-banner" aria-live="polite">
+                {activeLineLock.user} is editing this section on line {activeLineLock.line}
+              </div>
+            )}
+
             <div className="document-container">
 
               <div className="paper">
@@ -1974,21 +2428,28 @@ function App() {
                 <textarea
                   ref={editorRef}
                   className="editor"
+                  onFocus={(event) => updateCurrentUserPresence(event.currentTarget.selectionStart ?? 0)}
+                  onClick={(event) => updateCurrentUserPresence(event.currentTarget.selectionStart ?? 0)}
+                  onSelect={(event) => updateCurrentUserPresence(event.currentTarget.selectionStart ?? 0)}
+                  onKeyUp={(event) => updateCurrentUserPresence(event.currentTarget.selectionStart ?? 0)}
+                  onMouseUp={(event) => updateCurrentUserPresence(event.currentTarget.selectionStart ?? 0)}
                   onKeyDown={(event) => {
                     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
                       event.preventDefault();
                       setFindOpen(true);
                       window.setTimeout(() => findInputRef.current?.focus(), 0);
                     }
+                    updateCurrentUserPresence((event.currentTarget.selectionStart ?? 0) + 1);
                   }}
                   value={
                     activeDocument?.content || ""
                   }
-                  onChange={(e) =>
+                  onChange={(e) => {
                     updateContent(
                       e.target.value
-                    )
-                  }
+                    );
+                    updateCurrentUserPresence(e.target.selectionStart ?? 0);
+                  }}
                   placeholder="Start writing your document here..."
                 />
 
@@ -2006,7 +2467,13 @@ function App() {
               <div className="collaborators">
                 <span>Collaborators</span>
                 <div className="collaborator-list">
-                  {collaborators.map((collaborator) => <span className="collaborator-chip" key={collaborator.id}><span>{collaborator.name}</span><button type="button" onClick={() => handleRemoveCollaborator(collaborator)} title={`Remove ${collaborator.email}`} aria-label={`Remove ${collaborator.email} from this document`}>&times;</button></span>)}
+                  {collaborators.map((collaborator) => (
+                    <span className={`collaborator-chip ${liveCollaboratorNames.has(collaborator.name) ? "collaborator-live" : ""}`} key={collaborator.id}>
+                      <span className="collaborator-chip-name">{collaborator.name}</span>
+                      {liveCollaboratorNames.has(collaborator.name) && <span className="collaborator-live-dot" aria-label="Currently editing" />}
+                      <button type="button" onClick={() => handleRemoveCollaborator(collaborator)} title={`Remove ${collaborator.email}`} aria-label={`Remove ${collaborator.email} from this document`}>&times;</button>
+                    </span>
+                  ))}
                 </div>
               </div>
             </footer>
