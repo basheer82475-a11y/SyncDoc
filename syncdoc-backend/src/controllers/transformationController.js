@@ -4,12 +4,12 @@ const transformDocument = async (req, res) => {
   try {
     const ast = req.body;
 
-    if (!ast || !Array.isArray(ast.blocks)) {
+    if (!ast || !Array.isArray(ast.blocks) || ast.blocks.length === 0) {
       return res.status(400).json({
-        message: "Valid AST with blocks is required",
+        message: "Valid AST with at least one block is required",
       });
     }
-
+    
     const html = transformDocumentToHtml(ast);
 
     res.status(200).json({
