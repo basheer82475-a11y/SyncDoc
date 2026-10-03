@@ -1,9 +1,9 @@
-import type { Document } from '../App'
+import type { Document } from '../api'
 
 type SidebarProps = {
   documents: Document[]
-  activeId: number
-  onSelect: (id: number) => void
+  activeId: string | null
+  onSelect: (id: string) => void
   onCreate: () => void
 }
 
