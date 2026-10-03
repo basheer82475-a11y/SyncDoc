@@ -94,6 +94,48 @@ async function run() {
     }).lean();
     assert.deepStrictEqual(persistedConflictOperation.conflicts, conflictConfirmation.conflicts);
 
+    const missingBlockUpdate = waitFor(firstClient, "crdt-operation-confirmed");
+    firstClient.emit("crdt-operation", { documentId: documentId.toString(), operation: {
+      operationId: "persisted-missing-block-update",
+      type: "UPDATE_BLOCK",
+      blockId: "missing-conflict-block",
+      content: "Update on missing block",
+    } });
+    const missingBlockUpdateConfirmation = await missingBlockUpdate;
+    assert.strictEqual(
+      missingBlockUpdateConfirmation.crdt.blocks["missing-conflict-block"],
+      undefined,
+      "an update to a missing block must not fabricate CRDT block state",
+    );
+
+    const missingBlockDelete = waitFor(firstClient, "crdt-operation-confirmed");
+    firstClient.emit("crdt-operation", { documentId: documentId.toString(), operation: {
+      operationId: "persisted-missing-block-delete",
+      type: "DELETE_BLOCK",
+      blockId: "missing-conflict-block",
+    } });
+    const missingBlockConflictConfirmation = await missingBlockDelete;
+    assert.strictEqual(missingBlockConflictConfirmation.conflicts.length, 1);
+    assert.strictEqual(
+      missingBlockConflictConfirmation.conflicts[0].winnerOperationId,
+      missingBlockConflictConfirmation.operation.operationId,
+    );
+    assert.ok(missingBlockConflictConfirmation.conflicts.every((conflict) =>
+      typeof conflict.winnerOperationId === "string" && conflict.winnerOperationId.length > 0,
+    ));
+    assert.strictEqual(
+      missingBlockConflictConfirmation.crdt.blocks["missing-conflict-block"],
+      undefined,
+    );
+    const persistedMissingBlockConflict = await CRDTOperation.findOne({
+      documentId: documentId.toString(),
+      operationId: missingBlockConflictConfirmation.operation.operationId,
+    }).lean();
+    assert.deepStrictEqual(
+      persistedMissingBlockConflict.conflicts,
+      missingBlockConflictConfirmation.conflicts,
+    );
+
     const ydoc = new Y.Doc();
     ydoc.getMap("blocks").set("yjs-block", {
       blockId: "yjs-block", type: "paragraph", content: "Yjs survived restart",
@@ -146,6 +188,15 @@ async function run() {
       recoveredConflictOperation.conflicts,
       conflictConfirmation.conflicts,
       "conflict metadata must remain available after a fresh socket process recovers the document",
+    );
+    const recoveredMissingBlockConflict = await CRDTOperation.findOne({
+      documentId: documentId.toString(),
+      operationId: missingBlockConflictConfirmation.operation.operationId,
+    }).lean();
+    assert.deepStrictEqual(
+      recoveredMissingBlockConflict.conflicts,
+      missingBlockConflictConfirmation.conflicts,
+      "the deterministic winner must survive restart for a conflict on a missing block",
     );
 
     console.log(`Persistence and recovery passed using isolated database ${databaseName}.`);
