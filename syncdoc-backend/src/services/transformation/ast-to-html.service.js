@@ -14,28 +14,48 @@ const transformNodeToHtml = (node) => {
 
   const content = escapeHtml(node.content || "");
 
+  let html;
+
   switch (node.type) {
     case "heading":
-      return `<h1>${content}</h1>`;
+      html = `<h1>${content}</h1>`;
+      break;
 
     case "paragraph":
-      return `<p>${content}</p>`;
+      html = `<p>${content}</p>`;
+      break;
 
     case "code":
-      return `<pre><code>${content}</code></pre>`;
+      html = `<pre><code>${content}</code></pre>`;
+      break;
 
     case "quote":
-      return `<blockquote>${content}</blockquote>`;
+      html = `<blockquote>${content}</blockquote>`;
+      break;
 
     default:
-      return `<div>${content}</div>`;
+      html = `<div>${content}</div>`;
   }
+
+  if (Array.isArray(node.children) && node.children.length > 0) {
+    const childrenHtml = node.children
+      .map(transformNodeToHtml)
+      .filter(Boolean)
+      .join("\n");
+
+    return `${html}\n${childrenHtml}`;
+  }
+
+  return html;
 };
 
 const transformAstToHtml = (ast = {}) => {
   const blocks = ast.blocks || ast.children || [];
 
-  return blocks.map(transformNodeToHtml).join("\n");
+  return blocks
+    .map(transformNodeToHtml)
+    .filter(Boolean)
+    .join("\n");
 };
 
 module.exports = {
